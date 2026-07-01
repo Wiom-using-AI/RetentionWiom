@@ -875,20 +875,12 @@ def single_call():
         "days_remaining": str(days_remaining),
         "agent_name":     d.get("agent", "Jyoti"),
     }
-    webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
     payload = {
         "agent_id": AGENT_ID,
         "recipient_phone_number": d["phone"],
         "from_phone_number": FROM_NUM,
         "user_data": variables,
         "variables": variables,
-        "webhook_url": webhook_url,
-        "retry_config": {
-            "enabled": True,
-            "max_retries": 3,
-            "retry_on_statuses": ["no-answer", "busy"],
-            "retry_intervals_minutes": [120, 120, 120],
-        },
     }
 
     try:
@@ -911,7 +903,12 @@ def single_call():
         })
         return jsonify({"success": True, "execution_id": exec_id})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+        # Return full Bolna error response for debugging
+        try:
+            bolna_error = resp.json()
+        except:
+            bolna_error = {}
+        return jsonify({"success": False, "error": str(e), "bolna_response": bolna_error, "payload_sent": payload}), 400
 
 
 @app.route("/api/call/batch", methods=["POST"])
