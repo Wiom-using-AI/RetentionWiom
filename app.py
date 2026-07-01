@@ -39,11 +39,18 @@ def format_expiry_date(date_str):
 load_dotenv()
 
 app      = Flask(__name__)
-API_KEY  = os.getenv("BOLNA_API_KEY")
 AGENT_ID = os.getenv("BOLNA_AGENT_ID") or "cf801aa5-ae92-4fc4-9345-5ac2ab9a3c7f"
 FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "")
 BASE_URL = "https://api.bolna.ai"
-HEADERS  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+# API key — loaded from env, can also be set via /api/set-apikey endpoint
+_api_key_override = None
+
+def get_api_key():
+    return _api_key_override or os.getenv("BOLNA_API_KEY") or ""
+
+def get_headers():
+    return {"Authorization": f"Bearer {get_api_key()}", "Content-Type": "application/json"}
 
 call_log     = []
 callback_log = []
@@ -862,13 +869,24 @@ def index():
     return render_template_string(HTML)
 
 
+@app.route("/api/set-apikey", methods=["POST"])
+def set_apikey():
+    global _api_key_override
+    data = request.json or {}
+    key = data.get("key", "").strip()
+    if not key:
+        return jsonify({"success": False, "error": "No key provided"}), 400
+    _api_key_override = key
+    return jsonify({"success": True, "message": "API key set successfully"})
+
+
 @app.route("/debug")
 def debug():
     return jsonify({
         "env_BOLNA_API_KEY_set":    bool(os.getenv("BOLNA_API_KEY")),
         "env_BOLNA_AGENT_ID_set":   bool(os.getenv("BOLNA_AGENT_ID")),
-        "app_API_KEY_set":          bool(API_KEY),
-        "app_API_KEY_first4":       (API_KEY or "")[:4] or "NOT_SET",
+        "app_API_KEY_set":          bool(get_api_key()),
+        "app_API_KEY_first4":       (get_api_key() or "")[:4] or "NOT_SET",
         "app_AGENT_ID_set":         bool(AGENT_ID),
         "app_AGENT_ID_first4":      (AGENT_ID or "")[:4] or "NOT_SET",
         "PORT":                     os.getenv("PORT", "not set"),
@@ -897,7 +915,7 @@ def single_call():
     }
 
     try:
-        resp = req.post(f"{BASE_URL}/call", headers=HEADERS, json=payload, timeout=30)
+        resp = req.post(f"{BASE_URL}/call", headers=get_headers(), json=payload, timeout=30)
         resp.raise_for_status()
         result  = resp.json()
         exec_id = result.get("execution_id", "")
@@ -1009,7 +1027,7 @@ def update_disposition():
 @app.route("/api/fetch-recording/<exec_id>")
 def fetch_recording(exec_id):
     try:
-        r    = req.get(f"{BASE_URL}/call/logs/{exec_id}", headers=HEADERS, timeout=10)
+        r    = req.get(f"{BASE_URL}/call/logs/{exec_id}", headers=get_headers(), timeout=10)
         data = r.json()
         recording = (
             data.get("recording_url") or data.get("audio_url") or
@@ -1165,7 +1183,7 @@ def schedule_callback():
         }
         if scheduled_at: payload["scheduled_at"] = scheduled_at
 
-        resp = req.post(f"{BASE_URL}/call", headers=HEADERS, json=payload, timeout=30)
+        resp = req.post(f"{BASE_URL}/call", headers=get_headers(), json=payload, timeout=30)
         resp.raise_for_status()
         exec_id = resp.json().get("execution_id","")
 
