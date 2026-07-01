@@ -1213,7 +1213,7 @@ if __name__ == "__main__":
 
     if is_railway:
         print(f"\n✅ Running on Railway — port {port}")
-        print("Webhook URL: https://YOUR-APP.up.railway.app/webhook")
+        print("Webhook URL: https://retentionwiom-production.up.railway.app/webhook")
         app.run(host="0.0.0.0", port=port, debug=False)
     else:
         # Local — try ngrok
