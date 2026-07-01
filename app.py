@@ -875,11 +875,13 @@ def single_call():
         "days_remaining": str(days_remaining),
         "agent_name":     d.get("agent", "Jyoti"),
     }
+    webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
     payload = {
         "agent_id": AGENT_ID,
         "recipient_phone_number": d["phone"],
         "user_data": variables,
         "variables": variables,
+        "webhook_url": webhook_url,
         "retry_config": {
             "enabled": True,
             "max_retries": 3,
@@ -936,12 +938,14 @@ def batch_call():
         modified_csv = content
 
     try:
+        webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
         resp = req.post(
             f"{BASE_URL}/batches",
             headers={"Authorization": f"Bearer {API_KEY}"},
             data={
                 "agent_id":           AGENT_ID,
                 "from_phone_numbers": json.dumps([]),
+                "webhook_url":        webhook_url,
                 "retry_config": json.dumps({
                     "enabled": True,
                     "max_retries": 3,
