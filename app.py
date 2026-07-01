@@ -41,7 +41,7 @@ load_dotenv()
 app      = Flask(__name__)
 API_KEY  = os.getenv("BOLNA_API_KEY")
 AGENT_ID = os.getenv("BOLNA_AGENT_ID")
-FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "+919654231202")
+FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "")
 BASE_URL = "https://api.bolna.ai"
 HEADERS  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
@@ -860,6 +860,18 @@ refreshStats();
 @app.route("/")
 def index():
     return render_template_string(HTML)
+
+
+@app.route("/debug")
+def debug():
+    return jsonify({
+        "BOLNA_API_KEY_set":   bool(os.getenv("BOLNA_API_KEY")),
+        "BOLNA_AGENT_ID_set":  bool(os.getenv("BOLNA_AGENT_ID")),
+        "BOLNA_AGENT_ID_first4": (os.getenv("BOLNA_AGENT_ID") or "")[:4] or "NOT_SET",
+        "FROM_PHONE_NUMBER":   os.getenv("FROM_PHONE_NUMBER", "not set"),
+        "PORT":                os.getenv("PORT", "not set"),
+        "RAILWAY_ENV":         os.getenv("RAILWAY_ENVIRONMENT", "not set"),
+    })
 
 
 @app.route("/api/call/single", methods=["POST"])
