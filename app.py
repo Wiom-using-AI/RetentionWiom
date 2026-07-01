@@ -40,7 +40,7 @@ load_dotenv()
 
 app      = Flask(__name__)
 API_KEY  = os.getenv("BOLNA_API_KEY")
-AGENT_ID = os.getenv("BOLNA_AGENT_ID")
+AGENT_ID = os.getenv("BOLNA_AGENT_ID") or "cf801aa5-ae92-4fc4-9345-5ac2ab9a3c7f"
 FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "")
 BASE_URL = "https://api.bolna.ai"
 HEADERS  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
