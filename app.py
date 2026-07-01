@@ -865,12 +865,14 @@ def index():
 @app.route("/debug")
 def debug():
     return jsonify({
-        "BOLNA_API_KEY_set":   bool(os.getenv("BOLNA_API_KEY")),
-        "BOLNA_AGENT_ID_set":  bool(os.getenv("BOLNA_AGENT_ID")),
-        "BOLNA_AGENT_ID_first4": (os.getenv("BOLNA_AGENT_ID") or "")[:4] or "NOT_SET",
-        "FROM_PHONE_NUMBER":   os.getenv("FROM_PHONE_NUMBER", "not set"),
-        "PORT":                os.getenv("PORT", "not set"),
-        "RAILWAY_ENV":         os.getenv("RAILWAY_ENVIRONMENT", "not set"),
+        "env_BOLNA_API_KEY_set":    bool(os.getenv("BOLNA_API_KEY")),
+        "env_BOLNA_AGENT_ID_set":   bool(os.getenv("BOLNA_AGENT_ID")),
+        "app_API_KEY_set":          bool(API_KEY),
+        "app_API_KEY_first4":       (API_KEY or "")[:4] or "NOT_SET",
+        "app_AGENT_ID_set":         bool(AGENT_ID),
+        "app_AGENT_ID_first4":      (AGENT_ID or "")[:4] or "NOT_SET",
+        "PORT":                     os.getenv("PORT", "not set"),
+        "RAILWAY_ENV":              os.getenv("RAILWAY_ENVIRONMENT", "not set"),
     })
 
 
