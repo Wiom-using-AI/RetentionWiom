@@ -1171,6 +1171,9 @@ def fetch_recording(exec_id):
             data.get("recordingUrl")  or data.get("record_url") or
             data.get("combined_audio_url") or ""
         )
+        # Fallback: construct from exec_id (Bolna standard format)
+        if not recording:
+            recording = f"https://api.bolna.ai/recordings/call/{exec_id}"
 
         # Also try to extract transcript for auto-disposition
         transcript = data.get("transcript", [])
@@ -1228,6 +1231,9 @@ def webhook():
     recording = (data.get("recording_url") or data.get("audio_url") or
                  data.get("recordingUrl") or data.get("combined_audio_url") or
                  data.get("record_url") or "")
+    # Construct recording URL from exec_id if not provided (Bolna standard format)
+    if not recording and exec_id:
+        recording = f"https://api.bolna.ai/recordings/call/{exec_id}"
 
     # Extract transcript — handle both list and string formats
     transcript = data.get("transcript", [])
@@ -1306,12 +1312,13 @@ def webhook():
     original = None
     for entry in call_log:
         if entry.get("execution_id") == exec_id:
-            entry["status"]      = status
+            entry["status"] = status
             if disposition != "Pending":
                 entry["disposition"] = disposition
             if voc:
                 entry["voc"] = voc
-            if recording:
+            # Always save recording_url if we have one
+            if recording and not entry.get("recording_url"):
                 entry["recording_url"] = recording
             original = entry
             break
