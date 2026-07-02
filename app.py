@@ -1163,7 +1163,7 @@ def batch_call():
     try:
         webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
         resp = req.post(
-            f"{BASE_URL}/batches",
+            f"{BASE_URL}/batch",
             headers={"Authorization": f"Bearer {get_api_key()}"},
             data={
                 "agent_id":           AGENT_ID,
