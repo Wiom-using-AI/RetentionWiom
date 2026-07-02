@@ -1235,19 +1235,38 @@ def webhook():
     if not recording and exec_id:
         recording = f"https://api.bolna.ai/recordings/call/{exec_id}"
 
-    # Extract transcript — handle both list and string formats
-    transcript = data.get("transcript", [])
+    # Extract transcript — if null in webhook, fetch from Bolna API
+    transcript = data.get("transcript") or data.get("conversation_transcript")
+    if not transcript and exec_id and status == "completed":
+        try:
+            for ep in [f"{BASE_URL}/v1/logs/{exec_id}", f"{BASE_URL}/call/{exec_id}"]:
+                tr = req.get(ep, headers=get_headers(), timeout=10)
+                if tr.status_code == 200:
+                    td = tr.json()
+                    transcript = td.get("transcript") or td.get("conversation_transcript")
+                    if not recording:
+                        recording = (td.get("recording_url") or td.get("combined_audio_url")
+                                     or f"https://api.bolna.ai/recordings/call/{exec_id}")
+                    webhook_log.append({"time": datetime.now().strftime("%d %b %H:%M:%S"),
+                                        "fetched_transcript": str(transcript)[:300]})
+                    break
+        except Exception:
+            pass
+
     turns = []
     if isinstance(transcript, list):
         for t in transcript:
             role = t.get("role","")
-            text = t.get("content","") or t.get("text","")
+            text = t.get("content","") or t.get("text","") or ""
             turns.append({"role": role, "text": text})
         full_text    = " ".join(t["text"] for t in turns).lower()
         customer_txt = " ".join(t["text"] for t in turns if t["role"] in ("user","human","customer")).lower()
-    else:
-        full_text    = str(transcript).lower()
+    elif isinstance(transcript, str) and transcript:
+        full_text    = transcript.lower()
         customer_txt = full_text
+    else:
+        full_text    = ""
+        customer_txt = ""
 
     # ── Auto-Disposition Logic (priority order) ─────────────────────────────
     disposition = "Pending"
