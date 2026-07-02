@@ -1042,7 +1042,7 @@ def single_call():
         resp = req.post(f"{BASE_URL}/call", headers=get_headers(), json=payload, timeout=30)
         resp.raise_for_status()
         result  = resp.json()
-        exec_id = result.get("execution_id", "")
+        exec_id = result.get("execution_id") or result.get("id") or ""
 
         call_log.append({
             "name":          d["name"],
@@ -1157,9 +1157,9 @@ def fetch_recording(exec_id):
         # Try multiple Bolna endpoints for call details
         data = {}
         for endpoint in [
+            f"{BASE_URL}/v1/logs/{exec_id}",
             f"{BASE_URL}/call/{exec_id}",
             f"{BASE_URL}/execution/{exec_id}",
-            f"{BASE_URL}/call/logs/{exec_id}",
         ]:
             r = req.get(endpoint, headers=get_headers(), timeout=10)
             if r.status_code == 200:
@@ -1223,7 +1223,7 @@ def webhook():
     if len(webhook_log) > 50:
         webhook_log.pop(0)
 
-    exec_id   = data.get("execution_id") or data.get("run_id") or data.get("call_id") or ""
+    exec_id   = data.get("id") or data.get("execution_id") or data.get("run_id") or data.get("call_id") or ""
     status    = data.get("status", "completed")
     recording = (data.get("recording_url") or data.get("audio_url") or
                  data.get("recordingUrl") or data.get("combined_audio_url") or
