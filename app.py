@@ -1095,7 +1095,7 @@ def batch_call():
         webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
         resp = req.post(
             f"{BASE_URL}/batches",
-            headers={"Authorization": f"Bearer {API_KEY}"},
+            headers={"Authorization": f"Bearer {get_api_key()}"},
             data={
                 "agent_id":           AGENT_ID,
                 "from_phone_numbers": json.dumps([]),
@@ -1118,7 +1118,7 @@ def batch_call():
             call_log.append({
                 "name":          row.get("customer_name", ""),
                 "phone":         row.get("recipient_phone_number", ""),
-                "expiry":        format_expiry_date(row.get("expiry_date", "")),
+                "expiry":        row.get("expiry_date", ""),
                 "days":          row.get("days_remaining", ""),
                 "status":        "queued",
                 "disposition":   "Pending",
@@ -1199,6 +1199,21 @@ webhook_log = []  # store last 50 webhook payloads for debugging
 @app.route("/webhook-log")
 def view_webhook_log():
     return jsonify(webhook_log[-20:])
+
+@app.route("/webhook-test", methods=["GET"])
+def webhook_test():
+    """Simulate a Bolna webhook — use to test auto-disposition without a real call."""
+    fake = {
+        "execution_id": request.args.get("exec_id", "test-123"),
+        "status": request.args.get("status", "completed"),
+        "recording_url": request.args.get("rec", ""),
+        "transcript": [
+            {"role": "assistant", "content": "आपका व्योम recharge खत्म हो गया था।"},
+            {"role": "user",      "content": request.args.get("customer_said", "haan aaj kar deta hoon")},
+        ]
+    }
+    webhook_log.append({"time": datetime.now().strftime("%d %b %H:%M:%S"), "data": fake, "source": "test"})
+    return jsonify({"sent": fake, "tip": "Now check /webhook-log to see it arrived"})
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
