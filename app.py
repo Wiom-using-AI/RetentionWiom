@@ -1194,12 +1194,25 @@ def fetch_recording(exec_id):
         return jsonify({"success": False, "error": str(e)}), 400
 
 
+webhook_log = []  # store last 50 webhook payloads for debugging
+
+@app.route("/webhook-log")
+def view_webhook_log():
+    return jsonify(webhook_log[-20:])
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data      = request.json or {}
-    exec_id   = data.get("execution_id")
+    # Save raw webhook for debugging
+    webhook_log.append({"time": datetime.now().strftime("%d %b %H:%M:%S"), "data": data})
+    if len(webhook_log) > 50:
+        webhook_log.pop(0)
+
+    exec_id   = data.get("execution_id") or data.get("run_id") or data.get("call_id") or ""
     status    = data.get("status", "completed")
-    recording = data.get("recording_url") or data.get("audio_url") or data.get("recordingUrl") or ""
+    recording = (data.get("recording_url") or data.get("audio_url") or
+                 data.get("recordingUrl") or data.get("combined_audio_url") or
+                 data.get("record_url") or "")
 
     # Extract transcript — handle both list and string formats
     transcript = data.get("transcript", [])
