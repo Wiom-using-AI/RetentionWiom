@@ -1269,63 +1269,89 @@ def webhook():
         customer_txt = ""
 
     # ── Auto-Disposition Logic (priority order) ─────────────────────────────
+    # Keywords in BOTH Roman (Bolna sometimes romanizes) AND Devanagari (actual transcript)
     disposition = "Pending"
     voc         = ""
     cb_needed   = False
 
     # 1. Already recharged
-    if any(w in customer_txt for w in ["pehle se kar", "already", "ho gaya", "kar liya", "kara liya", "recharge ho"]):
+    if any(w in customer_txt for w in [
+        "pehle se kar", "already", "ho gaya", "kar liya", "kara liya", "recharge ho",
+        "पहले से", "हो गया", "कर लिया", "करा लिया", "रिचार्ज हो गया", "हो चुका"
+    ]):
         disposition = "Already Recharged"
         voc = "Customer ne bataya ki recharge pehle se ho gaya hai"
 
     # 2. Will recharge today
-    elif any(w in customer_txt for w in ["aaj kar", "abhi karta", "kar deta", "kar deti", "aaj karwa", "haan karunga", "haan karungi", "theek hai karunga"]):
+    elif any(w in customer_txt for w in [
+        "aaj kar", "abhi karta", "kar deta", "kar deti", "aaj karwa", "haan karunga", "haan karungi",
+        "आज कर", "अभी करता", "कर देता", "कर देती", "आज करवा", "हाँ करूंगा", "हाँ करूंगी",
+        "कर लूंगा", "कर लूंगी", "आज रिचार्ज", "ठीक है करूंगा"
+    ]):
         disposition = "Will Recharge Today"
         voc = "Customer ne aaj recharge karne ki baat ki"
 
-    # 3. Will recharge later
-    elif any(w in customer_txt for w in ["kal kar", "parso", "baad mein kar", "karenge", "dekh lete", "soch ke"]):
-        disposition = "Will Recharge Later"
-        voc = "Customer ne baad mein recharge karne ki baat ki"
+    # 3. Not answered / no response (check before "will recharge later" to avoid false match)
+    elif status in ("no-answer", "busy", "failed", "not-answered"):
+        disposition = "Not Answered / Busy"
+        voc = ""
 
-    # 4. Device already returned
-    elif any(w in customer_txt for w in ["wapas kar diya", "de diya", "return kar diya", "le gaye", "wapas de"]):
-        disposition = "Device Already Returned"
-        voc = "Customer ne bataya device pehle se wapas kar diya"
-
-    # 5. Wants device return — service issue
-    elif any(w in customer_txt for w in ["slow", "problem", "issue", "kaam nahi", "nahi chala", "bahut slow", "signal nahi", "connection nahi"]):
-        disposition = "Don't Want – Service Issue"
-        # Extract VOC — what exactly was the problem
-        if "slow" in customer_txt: voc = "Service issue: internet slow tha"
-        elif "signal" in customer_txt: voc = "Service issue: signal nahi tha"
-        elif "kaam nahi" in customer_txt or "nahi chala" in customer_txt: voc = "Service issue: internet kaam nahi kiya"
-        else: voc = "Service issue (details call mein)"
-        cb_needed = False
-
-    # 6. Wants device return — personal reason
-    elif any(w in customer_txt for w in ["nahi chahiye", "band karo", "wapas karna", "return karna", "lelo", "le lo device", "nahi lena", "shifted", "shift ho", "chale gaye"]):
-        disposition = "Wants Device Return"
-        if "shift" in customer_txt: voc = "Personal: ghar shift ho gaya"
-        elif "nahi chahiye" in customer_txt: voc = "Personal: service nahi chahiye"
-        else: voc = "Device return chahiye (reason: call mein)"
-
-    # 7. Out of town
-    elif any(w in customer_txt for w in ["gaon", "bahar", "gaya hoon", "travel", "bahar hoon", "sheher se", "wapas aaunga", "wapas aaungi"]):
+    # 4. Out of town (check before "will recharge later" — "karenge" appears in both)
+    elif any(w in customer_txt for w in [
+        "gaon", "bahar", "gaya hoon", "travel", "bahar hoon", "sheher se", "wapas aaunga", "wapas aaungi", "village",
+        "गाँव", "गांव", "बाहर", "गया हूँ", "गए हुए", "बाहर हूँ", "शहर से", "वापस आऊंगा", "वापस आऊंगी",
+        "घर नहीं", "आ कर", "आकर", "लौट कर", "लौटकर", "बाहर गए", "गए हैं"
+    ]):
         disposition = "Out of Town"
         voc = "Customer abhi bahar hai"
         cb_needed = True
 
-    # 8. Callback requested
-    elif any(w in customer_txt for w in ["busy", "abhi nahi", "baad mein call", "kal call", "time nahi", "thodi der", "bad me"]):
+    # 5. Will recharge later
+    elif any(w in customer_txt for w in [
+        "kal kar", "parso", "baad mein kar", "karenge", "dekh lete", "soch ke", "baad mein",
+        "कल कर", "परसों", "बाद में", "करेंगे", "देख लेते", "सोच के", "कल करेंगे",
+        "बाद में करते", "थोड़ी देर", "कुछ दिन", "अगले हफ्ते"
+    ]):
+        disposition = "Will Recharge Later"
+        voc = "Customer ne baad mein recharge karne ki baat ki"
+
+    # 6. Device already returned
+    elif any(w in customer_txt for w in [
+        "wapas kar diya", "de diya", "return kar diya", "le gaye", "wapas de",
+        "वापस कर दिया", "दे दिया", "रिटर्न कर दिया", "ले गए", "वापस दे दिया", "जमा कर दिया"
+    ]):
+        disposition = "Device Already Returned"
+        voc = "Customer ne bataya device pehle se wapas kar diya"
+
+    # 7. Service issue
+    elif any(w in customer_txt for w in [
+        "slow", "problem", "issue", "kaam nahi", "nahi chala", "signal nahi", "connection nahi",
+        "स्लो", "धीमा", "काम नहीं", "नहीं चला", "सिग्नल नहीं", "कनेक्शन नहीं", "इंटरनेट नहीं",
+        "बहुत slow", "नेट नहीं"
+    ]):
+        disposition = "Don't Want – Service Issue"
+        if any(w in customer_txt for w in ["slow","स्लो","धीमा"]): voc = "Service issue: internet slow tha"
+        elif any(w in customer_txt for w in ["signal","सिग्नल"]): voc = "Service issue: signal nahi tha"
+        else: voc = "Service issue: internet kaam nahi kiya"
+
+    # 8. Wants device return — personal reason
+    elif any(w in customer_txt for w in [
+        "nahi chahiye", "band karo", "wapas karna", "return karna", "lelo", "nahi lena", "shifted", "shift ho",
+        "नहीं चाहिए", "बंद करो", "वापस करना", "रिटर्न करना", "ले लो", "नहीं लेना", "शिफ्ट हो", "चले गए"
+    ]):
+        disposition = "Wants Device Return"
+        if any(w in customer_txt for w in ["shift","शिफ्ट"]): voc = "Personal: ghar shift ho gaya"
+        elif any(w in customer_txt for w in ["nahi chahiye","नहीं चाहिए"]): voc = "Personal: service nahi chahiye"
+        else: voc = "Device return chahiye (reason: call mein)"
+
+    # 9. Callback requested
+    elif any(w in customer_txt for w in [
+        "busy", "abhi nahi", "baad mein call", "kal call", "time nahi", "thodi der",
+        "बिज़ी", "अभी नहीं", "बाद में कॉल", "कल कॉल", "टाइम नहीं", "थोड़ी देर"
+    ]):
         disposition = "Callback Scheduled"
         voc = "Customer busy tha — callback chahiye"
         cb_needed = True
-
-    # 9. Not answered / no response
-    elif status in ("no-answer", "busy", "failed", "not-answered"):
-        disposition = "Not Answered / Busy"
-        voc = ""
 
     # ── Update call log entry ────────────────────────────────────────────────
     original = None
