@@ -71,8 +71,27 @@ def get_api_key():
 def get_headers():
     return {"Authorization": f"Bearer {get_api_key()}", "Content-Type": "application/json"}
 
-call_log     = []
-callback_log = []
+LOG_FILE      = "call_log.json"
+CALLBACK_FILE = "callback_log.json"
+
+def load_json(path):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+call_log     = load_json(LOG_FILE)
+callback_log = load_json(CALLBACK_FILE)
 
 DISPOSITIONS = [
     "Pending",
@@ -1037,6 +1056,7 @@ def single_call():
             "execution_id":  exec_id,
             "time":          datetime.now().strftime("%d %b %H:%M"),
         })
+        save_json(LOG_FILE, call_log)
         return jsonify({"success": True, "execution_id": exec_id})
     except Exception as e:
         # Return full Bolna error response for debugging
@@ -1107,6 +1127,7 @@ def batch_call():
                 "execution_id":  batch_id,
                 "time":          datetime.now().strftime("%d %b %H:%M"),
             })
+        save_json(LOG_FILE, call_log)
 
         return jsonify({"success": True, "batch_id": batch_id, "total": len(rows)})
     except Exception as e:
@@ -1126,6 +1147,7 @@ def update_disposition():
             entry["disposition"] = d.get("disposition", "")
             entry["voc"]         = d.get("voc", "")
             break
+    save_json(LOG_FILE, call_log)
     return jsonify({"success": True})
 
 
@@ -1266,6 +1288,8 @@ def webhook():
             original = entry
             break
 
+    save_json(LOG_FILE, call_log)
+
     # ── Auto-add to callback list ────────────────────────────────────────────
     if cb_needed and original:
         next_day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT10:00")
@@ -1280,6 +1304,7 @@ def webhook():
             "status":       "pending",
             "created_at":   datetime.now().strftime("%d %b %H:%M"),
         })
+        save_json(CALLBACK_FILE, callback_log)
 
     return jsonify({"received": True})
 
