@@ -5,8 +5,13 @@ Run: python app.py → http://localhost:5000
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import requests as req
-import csv, io, os, json, psycopg2, psycopg2.extras
+import csv, io, os, json
 from datetime import datetime, timedelta
+try:
+    import psycopg2, psycopg2.extras
+    _PG_AVAILABLE = True
+except ImportError:
+    _PG_AVAILABLE = False
 from dotenv import load_dotenv
 
 # Hindi month names for natural date reading by TTS
@@ -78,8 +83,8 @@ LOG_FILE      = os.path.join(_DATA_DIR, "call_log.json")
 CALLBACK_FILE = os.path.join(_DATA_DIR, "callback_log.json")
 
 def _get_db():
-    """Return a psycopg2 connection or None if no DATABASE_URL."""
-    if not DATABASE_URL:
+    """Return a psycopg2 connection or None if not available."""
+    if not DATABASE_URL or not _PG_AVAILABLE:
         return None
     try:
         return psycopg2.connect(DATABASE_URL, sslmode="require")
