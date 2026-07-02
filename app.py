@@ -1010,11 +1010,13 @@ def single_call():
         "days_remaining": format_days_remaining(days_remaining),
         "agent_name":     d.get("agent", "Jyoti"),
     }
+    webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
     payload = {
         "agent_id": AGENT_ID,
         "recipient_phone_number": d["phone"],
         "user_data": variables,
         "variables": variables,
+        "webhook_url": webhook_url,
     }
 
     try:
@@ -1130,18 +1132,42 @@ def update_disposition():
 @app.route("/api/fetch-recording/<exec_id>")
 def fetch_recording(exec_id):
     try:
-        r    = req.get(f"{BASE_URL}/call/logs/{exec_id}", headers=get_headers(), timeout=10)
-        data = r.json()
+        # Try multiple Bolna endpoints for call details
+        data = {}
+        for endpoint in [
+            f"{BASE_URL}/call/{exec_id}",
+            f"{BASE_URL}/execution/{exec_id}",
+            f"{BASE_URL}/call/logs/{exec_id}",
+        ]:
+            r = req.get(endpoint, headers=get_headers(), timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                break
+
         recording = (
             data.get("recording_url") or data.get("audio_url") or
-            data.get("recordingUrl")  or data.get("record_url") or ""
+            data.get("recordingUrl")  or data.get("record_url") or
+            data.get("combined_audio_url") or ""
         )
+
+        # Also try to extract transcript for auto-disposition
+        transcript = data.get("transcript", [])
+        status = data.get("status", "")
+
         for entry in call_log:
             if entry.get("execution_id") == exec_id:
-                if recording: entry["recording_url"] = recording
-                if data.get("status"): entry["status"] = data["status"]
+                if recording:
+                    entry["recording_url"] = recording
+                if status:
+                    entry["status"] = status
                 break
-        return jsonify({"success": True, "recording_url": recording, "raw": data})
+
+        return jsonify({
+            "success": True,
+            "recording_url": recording,
+            "status": status,
+            "raw": data
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
 
