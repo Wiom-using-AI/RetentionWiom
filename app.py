@@ -262,6 +262,11 @@ tbody tr:hover td { background: #f8faff; }
     <div class="nav-item" onclick="goTo('sop')" id="n-sop">
       <span class="icon">📖</span> SOP Rules
     </div>
+    <div class="nav-sep"></div>
+    <div class="nav-item" onclick="goTo('setup')" id="n-setup">
+      <span class="icon">⚙️</span> Setup
+      <span id="setupBadge" style="background:#ef4444;color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;margin-left:auto">!</span>
+    </div>
   </div>
 
   <!-- Content -->
@@ -515,6 +520,45 @@ tbody tr:hover td { background: #f8faff; }
       </div>
     </div>
 
+    <!-- ══════ SETUP ══════ -->
+    <div id="p-setup" style="display:none">
+      <div class="card">
+        <div class="card-title">⚙️ Setup — API Configuration</div>
+
+        <div id="setupStatus" class="warn-box" style="margin-bottom:20px">
+          ⚠️ API Key not set — calls will fail. Enter the key below and click Save.
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group form-full">
+            <label>Bolna API Key *</label>
+            <input id="setupApiKey" type="password" placeholder="bn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="font-family:monospace"/>
+            <div style="font-size:11px;color:#94a3b8;margin-top:4px">This is needed to make AI calls. Get it from your Bolna dashboard.</div>
+          </div>
+        </div>
+
+        <div style="margin-top:18px;display:flex;gap:10px;align-items:center">
+          <button class="btn btn-success" onclick="saveApiKey()" style="font-size:14px;padding:11px 24px">
+            💾 Save API Key
+          </button>
+          <button class="btn btn-outline" onclick="document.getElementById('setupApiKey').type = document.getElementById('setupApiKey').type === 'password' ? 'text' : 'password'">
+            👁 Show/Hide
+          </button>
+        </div>
+
+        <div class="result-panel" id="setupResult" style="margin-top:16px">
+          <div style="font-weight:700;color:#166534">✅ API Key saved! You can now make calls.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">ℹ️ Important Note</div>
+        <div class="warn-box" style="margin-bottom:0">
+          <b>After every Railway restart or redeploy</b>, you need to re-enter the API key here once. This is a one-time step each time the server restarts.
+        </div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
 
@@ -522,7 +566,7 @@ tbody tr:hover td { background: #f8faff; }
 
 <script>
 // ─── Navigation ───────────────────────────────────────────────────────────────
-const pages = ['upload','single','log','callbacks','sop'];
+const pages = ['upload','single','log','callbacks','sop','setup'];
 
 function goTo(pg) {
   pages.forEach(p => {
@@ -854,9 +898,49 @@ async function callNow(phone, name, expiry, days) {
   loadCBs();
 }
 
+// ─── Setup / API Key ──────────────────────────────────────────────────────────
+async function saveApiKey() {
+  const key = document.getElementById('setupApiKey').value.trim();
+  if (!key) { toast('Please enter the API key!', false); return; }
+
+  try {
+    const r = await fetch('/api/set-apikey', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key})
+    });
+    const d = await r.json();
+    if (d.success) {
+      document.getElementById('setupResult').style.display = 'block';
+      document.getElementById('setupStatus').style.background = '#f0fdf4';
+      document.getElementById('setupStatus').style.border = '1px solid #86efac';
+      document.getElementById('setupStatus').style.color = '#166534';
+      document.getElementById('setupStatus').innerHTML = '✅ API Key is set — calls are ready!';
+      document.getElementById('setupBadge').style.display = 'none';
+      toast('✅ API Key saved successfully!');
+    } else {
+      toast('❌ Failed: ' + d.error, false);
+    }
+  } catch(err) { toast('❌ ' + err.message, false); }
+}
+
+async function checkApiKeyStatus() {
+  try {
+    const r = await fetch('/debug?check=1');
+    const d = await r.json();
+    if (d.app_API_KEY_set) {
+      document.getElementById('setupStatus').style.background = '#f0fdf4';
+      document.getElementById('setupStatus').style.border = '1px solid #86efac';
+      document.getElementById('setupStatus').style.color = '#166534';
+      document.getElementById('setupStatus').innerHTML = '✅ API Key is set — calls are ready!';
+      document.getElementById('setupBadge').style.display = 'none';
+    }
+  } catch(e) {}
+}
+
 // ─── Auto refresh ─────────────────────────────────────────────────────────────
 setInterval(refreshStats, 30000);
 refreshStats();
+checkApiKeyStatus();
 </script>
 </body>
 </html>
