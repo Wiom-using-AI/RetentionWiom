@@ -5,7 +5,7 @@ Run: python app.py → http://localhost:5000
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import requests as req
-import csv, io, os, json
+import csv, io, os, json, psycopg2, psycopg2.extras
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -71,12 +71,57 @@ def get_api_key():
 def get_headers():
     return {"Authorization": f"Bearer {get_api_key()}", "Content-Type": "application/json"}
 
-# Use /data/ for Railway persistent volume; fall back to local for development
+# ── Persistent storage: PostgreSQL if available, else local JSON ──────────────
+DATABASE_URL  = os.getenv("DATABASE_URL", "")
 _DATA_DIR     = "/data" if os.path.isdir("/data") else "."
 LOG_FILE      = os.path.join(_DATA_DIR, "call_log.json")
 CALLBACK_FILE = os.path.join(_DATA_DIR, "callback_log.json")
 
-def load_json(path):
+def _get_db():
+    """Return a psycopg2 connection or None if no DATABASE_URL."""
+    if not DATABASE_URL:
+        return None
+    try:
+        return psycopg2.connect(DATABASE_URL, sslmode="require")
+    except Exception:
+        return None
+
+def _init_db():
+    conn = _get_db()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS call_log (
+                    id SERIAL PRIMARY KEY,
+                    data JSONB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS callback_log (
+                    id SERIAL PRIMARY KEY,
+                    data JSONB NOT NULL
+                );
+            """)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+def load_json(path, table=None):
+    """Load from PostgreSQL if available, else from local JSON file."""
+    if DATABASE_URL and table:
+        conn = _get_db()
+        if conn:
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(f"SELECT data FROM {table} ORDER BY id")
+                    rows = cur.fetchall()
+                    return [r["data"] for r in rows]
+            except Exception:
+                pass
+            finally:
+                conn.close()
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -85,15 +130,32 @@ def load_json(path):
         pass
     return []
 
-def save_json(path, data):
+def save_json(path, data, table=None):
+    """Save to PostgreSQL if available, else to local JSON file."""
+    if DATABASE_URL and table:
+        conn = _get_db()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {table}")
+                    for item in data:
+                        cur.execute(f"INSERT INTO {table} (data) VALUES (%s)",
+                                    (json.dumps(item, ensure_ascii=False),))
+                conn.commit()
+                return
+            except Exception:
+                pass
+            finally:
+                conn.close()
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
-call_log     = load_json(LOG_FILE)
-callback_log = load_json(CALLBACK_FILE)
+_init_db()
+call_log     = load_json(LOG_FILE,      table="call_log")
+callback_log = load_json(CALLBACK_FILE, table="callback_log")
 
 DISPOSITIONS = [
     "Pending",
@@ -1063,7 +1125,7 @@ def single_call():
             "execution_id":  exec_id,
             "time":          datetime.now().strftime("%d %b %H:%M"),
         })
-        save_json(LOG_FILE, call_log)
+        save_json(LOG_FILE, call_log, table="call_log")
         return jsonify({"success": True, "execution_id": exec_id})
     except Exception as e:
         # Return full Bolna error response for debugging
@@ -1134,7 +1196,7 @@ def batch_call():
                 "execution_id":  batch_id,
                 "time":          datetime.now().strftime("%d %b %H:%M"),
             })
-        save_json(LOG_FILE, call_log)
+        save_json(LOG_FILE, call_log, table="call_log")
 
         return jsonify({"success": True, "batch_id": batch_id, "total": len(rows)})
     except Exception as e:
@@ -1154,7 +1216,7 @@ def update_disposition():
             entry["disposition"] = d.get("disposition", "")
             entry["voc"]         = d.get("voc", "")
             break
-    save_json(LOG_FILE, call_log)
+    save_json(LOG_FILE, call_log, table="call_log")
     return jsonify({"success": True})
 
 
@@ -1375,7 +1437,7 @@ def webhook():
             original = entry
             break
 
-    save_json(LOG_FILE, call_log)
+    save_json(LOG_FILE, call_log, table="call_log")
 
     # ── Auto-add to callback list ────────────────────────────────────────────
     if cb_needed and original:
@@ -1391,7 +1453,7 @@ def webhook():
             "status":       "pending",
             "created_at":   datetime.now().strftime("%d %b %H:%M"),
         })
-        save_json(CALLBACK_FILE, callback_log)
+        save_json(CALLBACK_FILE, callback_log, table="callback_log")
 
     return jsonify({"received": True})
 
