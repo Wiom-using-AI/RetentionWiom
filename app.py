@@ -1160,44 +1160,81 @@ def batch_call():
     else:
         modified_csv = content
 
-    try:
-        webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
-        resp = req.post(
-            f"{BASE_URL}/batch",
-            headers={"Authorization": f"Bearer {get_api_key()}"},
-            data={
-                "agent_id":           AGENT_ID,
-                "from_phone_numbers": json.dumps([]),
-                "webhook_url":        webhook_url,
-                "retry_config": json.dumps({
-                    "enabled": True,
-                    "max_retries": 3,
-                    "retry_on_statuses": ["no-answer", "busy"],
-                    "retry_intervals_minutes": [120, 120, 120],
-                }),
-            },
-            files={"file": (file.filename, modified_csv.encode('utf-8'), "text/csv; charset=utf-8")},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        result   = resp.json()
-        batch_id = result.get("batch_id", "")
+    webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
 
+    # ── Try Bolna batch API endpoints ────────────────────────────────────────
+    batch_resp = None
+    for batch_url in [f"{BASE_URL}/v1/batches", f"{BASE_URL}/batches", f"{BASE_URL}/batch"]:
+        try:
+            r = req.post(
+                batch_url,
+                headers={"Authorization": f"Bearer {get_api_key()}"},
+                data={
+                    "agent_id":           AGENT_ID,
+                    "from_phone_numbers": json.dumps([]),
+                    "webhook_url":        webhook_url,
+                    "retry_config": json.dumps({
+                        "enabled": True, "max_retries": 3,
+                        "retry_on_statuses": ["no-answer", "busy"],
+                        "retry_intervals_minutes": [120, 120, 120],
+                    }),
+                },
+                files={"file": (file.filename, modified_csv.encode("utf-8"), "text/csv; charset=utf-8")},
+                timeout=60,
+            )
+            if r.status_code not in (404, 405):
+                r.raise_for_status()
+                batch_resp = r
+                break
+        except Exception:
+            continue
+
+    # ── Fallback: fire individual /call for each row ──────────────────────────
+    if not batch_resp:
+        success_count = 0
+        errors = []
+        for row in rows:
+            try:
+                variables = {
+                    "customer_name":  row.get("customer_name", ""),
+                    "expiry_date":    row.get("expiry_date", ""),
+                    "days_remaining": format_days_remaining(row.get("days_remaining", "")),
+                    "agent_name":     row.get("agent_name", "Jyoti"),
+                }
+                pr = req.post(f"{BASE_URL}/call", headers=get_headers(), json={
+                    "agent_id": AGENT_ID,
+                    "recipient_phone_number": row.get("recipient_phone_number", ""),
+                    "user_data": variables, "variables": variables,
+                    "webhook_url": webhook_url,
+                }, timeout=30)
+                pr.raise_for_status()
+                exec_id = pr.json().get("execution_id") or pr.json().get("id") or ""
+                call_log.append({
+                    "name": row.get("customer_name", ""), "phone": row.get("recipient_phone_number", ""),
+                    "expiry": row.get("expiry_date", ""), "days": row.get("days_remaining", ""),
+                    "status": "queued", "disposition": "Pending", "voc": "",
+                    "recording_url": "", "execution_id": exec_id,
+                    "time": datetime.now().strftime("%d %b %H:%M"),
+                })
+                success_count += 1
+            except Exception as ex:
+                errors.append(str(ex))
+        save_json(LOG_FILE, call_log, table="call_log")
+        return jsonify({"success": True, "batch_id": "individual-calls",
+                        "total": success_count, "errors": errors})
+
+    try:
+        result   = batch_resp.json()
+        batch_id = result.get("batch_id") or result.get("id") or "batch"
         for row in rows:
             call_log.append({
-                "name":          row.get("customer_name", ""),
-                "phone":         row.get("recipient_phone_number", ""),
-                "expiry":        row.get("expiry_date", ""),
-                "days":          row.get("days_remaining", ""),
-                "status":        "queued",
-                "disposition":   "Pending",
-                "voc":           "",
-                "recording_url": "",
-                "execution_id":  batch_id,
-                "time":          datetime.now().strftime("%d %b %H:%M"),
+                "name": row.get("customer_name", ""), "phone": row.get("recipient_phone_number", ""),
+                "expiry": row.get("expiry_date", ""), "days": row.get("days_remaining", ""),
+                "status": "queued", "disposition": "Pending", "voc": "",
+                "recording_url": "", "execution_id": batch_id,
+                "time": datetime.now().strftime("%d %b %H:%M"),
             })
         save_json(LOG_FILE, call_log, table="call_log")
-
         return jsonify({"success": True, "batch_id": batch_id, "total": len(rows)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
