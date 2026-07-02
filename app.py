@@ -1464,7 +1464,7 @@ def webhook():
         voc = "Customer busy tha — callback chahiye"
         cb_needed = True
 
-    # ── Update call log entry ────────────────────────────────────────────────
+    # ── Update OR create call log entry ─────────────────────────────────────
     original = None
     for entry in call_log:
         if entry.get("execution_id") == exec_id:
@@ -1473,11 +1473,29 @@ def webhook():
                 entry["disposition"] = disposition
             if voc:
                 entry["voc"] = voc
-            # Always save recording_url if we have one
             if recording and not entry.get("recording_url"):
                 entry["recording_url"] = recording
             original = entry
             break
+
+    # If call was made directly via Bolna (not through dashboard), create new entry
+    if not original and exec_id and status == "completed":
+        ctx = data.get("context_details", {}) or {}
+        recipient = ctx.get("recipient_data", {}) or {}
+        new_entry = {
+            "name":          recipient.get("customer_name", "") or data.get("to_number", ""),
+            "phone":         data.get("telephony_data", {}).get("to_number", "") or recipient.get("recipient_phone_number", ""),
+            "expiry":        recipient.get("expiry_date", ""),
+            "days":          recipient.get("days_remaining", ""),
+            "status":        status,
+            "disposition":   disposition,
+            "voc":           voc,
+            "recording_url": recording,
+            "execution_id":  exec_id,
+            "time":          datetime.now().strftime("%d %b %H:%M"),
+        }
+        call_log.append(new_entry)
+        original = new_entry
 
     save_json(LOG_FILE, call_log, table="call_log")
 
