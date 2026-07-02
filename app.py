@@ -56,7 +56,8 @@ def format_expiry_date(date_str):
 
 load_dotenv()
 
-app      = Flask(__name__)
+app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False  # Allow Devanagari/Unicode in JSON responses
 AGENT_ID = os.getenv("BOLNA_AGENT_ID") or "cf801aa5-ae92-4fc4-9345-5ac2ab9a3c7f"
 FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "")
 BASE_URL = "https://api.bolna.ai"
@@ -1084,7 +1085,7 @@ def batch_call():
                     "retry_intervals_minutes": [120, 120, 120],
                 }),
             },
-            files={"file": (file.filename, modified_csv.encode(), "text/csv")},
+            files={"file": (file.filename, modified_csv.encode('utf-8'), "text/csv; charset=utf-8")},
             timeout=60,
         )
         resp.raise_for_status()
