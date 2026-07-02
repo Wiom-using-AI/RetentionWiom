@@ -1004,6 +1004,11 @@ def set_apikey():
     return jsonify({"success": True, "message": "API key set successfully"})
 
 
+@app.route("/debug-calllog")
+def debug_calllog():
+    """Show full call log with all fields for debugging."""
+    return jsonify(call_log[-5:])  # last 5 entries
+
 @app.route("/debug")
 def debug():
     return jsonify({
