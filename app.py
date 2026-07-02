@@ -71,8 +71,10 @@ def get_api_key():
 def get_headers():
     return {"Authorization": f"Bearer {get_api_key()}", "Content-Type": "application/json"}
 
-LOG_FILE      = "call_log.json"
-CALLBACK_FILE = "callback_log.json"
+# Use /data/ for Railway persistent volume; fall back to local for development
+_DATA_DIR     = "/data" if os.path.isdir("/data") else "."
+LOG_FILE      = os.path.join(_DATA_DIR, "call_log.json")
+CALLBACK_FILE = os.path.join(_DATA_DIR, "callback_log.json")
 
 def load_json(path):
     try:
@@ -1441,11 +1443,14 @@ def get_callbacks():
 @app.route("/export-csv")
 def export_csv():
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=[
-        "name","phone","expiry","days","status","disposition","voc","execution_id","time"
-    ])
-    writer.writeheader(); writer.writerows(call_log)
-    return Response(output.getvalue(), mimetype="text/csv",
+    fields = ["name","phone","expiry","days","status","disposition","voc","recording_url","execution_id","time"]
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+    writer.writeheader()
+    for row in call_log:
+        writer.writerow({f: row.get(f, "") for f in fields})
+    return Response(
+        output.getvalue().encode("utf-8"),
+        mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition":"attachment; filename=wiom_calls.csv"})
 
 
