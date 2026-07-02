@@ -15,17 +15,35 @@ HINDI_MONTHS = {
     5:"May", 6:"June", 7:"July", 8:"August",
     9:"September", 10:"October", 11:"November", 12:"December"
 }
+# Devanagari day names for expiry date (e.g. "तेरह June")
 HINDI_DAYS = {
-    1:"pehli", 2:"do", 3:"teen", 4:"chaar", 5:"paanch",
-    6:"chhe", 7:"saat", 8:"aath", 9:"nau", 10:"das",
-    11:"gyarah", 12:"barah", 13:"terah", 14:"chaudah", 15:"pandrah",
-    16:"solah", 17:"satrah", 18:"atharah", 19:"unnis", 20:"bees",
-    21:"ikkees", 22:"baaees", 23:"teis", 24:"chaubees", 25:"pachees",
-    26:"chabbees", 27:"sattaees", 28:"atthaees", 29:"unattees", 30:"tees", 31:"ikattees"
+    1:"पहली", 2:"दो", 3:"तीन", 4:"चार", 5:"पाँच",
+    6:"छह", 7:"सात", 8:"आठ", 9:"नौ", 10:"दस",
+    11:"ग्यारह", 12:"बारह", 13:"तेरह", 14:"चौदह", 15:"पंद्रह",
+    16:"सोलह", 17:"सत्रह", 18:"अठारह", 19:"उन्नीस", 20:"बीस",
+    21:"इक्कीस", 22:"बाईस", 23:"तेईस", 24:"चौबीस", 25:"पच्चीस",
+    26:"छब्बीस", 27:"सत्ताईस", 28:"अट्ठाईस", 29:"उनतीस", 30:"तीस", 31:"इकतीस"
+}
+# Devanagari number words for days_remaining (e.g. "उनतीस")
+HINDI_NUMBERS = {
+    1:"एक", 2:"दो", 3:"तीन", 4:"चार", 5:"पाँच",
+    6:"छह", 7:"सात", 8:"आठ", 9:"नौ", 10:"दस",
+    11:"ग्यारह", 12:"बारह", 13:"तेरह", 14:"चौदह", 15:"पंद्रह",
+    16:"सोलह", 17:"सत्रह", 18:"अठारह", 19:"उन्नीस", 20:"बीस",
+    21:"इक्कीस", 22:"बाईस", 23:"तेईस", 24:"चौबीस", 25:"पच्चीस",
+    26:"छब्बीस", 27:"सत्ताईस", 28:"अट्ठाईस", 29:"उनतीस", 30:"तीस",
 }
 
+def format_days_remaining(days_str):
+    """Convert '29' → 'उनतीस' so TTS pronounces correctly in Hindi."""
+    try:
+        n = int(str(days_str).strip())
+        return HINDI_NUMBERS.get(n, str(n))
+    except Exception:
+        return str(days_str)
+
 def format_expiry_date(date_str):
-    """Convert 2025-06-13 → 'terah June' for natural Hindi TTS reading."""
+    """Convert 2025-06-13 → 'तेरह June' for natural Hindi TTS reading."""
     if not date_str:
         return "recently"
     try:
@@ -982,13 +1000,13 @@ def debug():
 def single_call():
     d = request.json
     raw_expiry     = d.get("expiry_date") or d.get("expiry", "")
-    expiry_date    = format_expiry_date(raw_expiry)   # e.g. "terah June"
+    expiry_date    = format_expiry_date(raw_expiry)
     days_remaining = d.get("days_remaining") or d.get("days", "")
 
     variables = {
         "customer_name":  d["name"],
         "expiry_date":    expiry_date,
-        "days_remaining": str(days_remaining),
+        "days_remaining": format_days_remaining(days_remaining),
         "agent_name":     d.get("agent", "Jyoti"),
     }
     payload = {
@@ -1250,13 +1268,13 @@ def schedule_callback():
             "user_data": {
                 "customer_name":  d["name"],
                 "expiry_date":    d.get("expiry",""),
-                "days_remaining": str(d.get("days","")),
+                "days_remaining": format_days_remaining(d.get("days","")),
                 "agent_name":     "Jyoti",
             },
             "variables": {
                 "customer_name":  d["name"],
                 "expiry_date":    d.get("expiry",""),
-                "days_remaining": str(d.get("days","")),
+                "days_remaining": format_days_remaining(d.get("days","")),
                 "agent_name":     "Jyoti",
             },
             "retry_config": {
