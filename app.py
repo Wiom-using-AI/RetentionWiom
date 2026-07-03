@@ -1385,19 +1385,22 @@ def webhook():
     voc         = ""
     cb_needed   = False
 
-    # 1. Already recharged
+    # 1. Already recharged — must have "recharge" + confirmation (not just "ho gaya")
     if any(w in customer_txt for w in [
-        "pehle se kar", "already", "ho gaya", "kar liya", "kara liya", "recharge ho",
-        "पहले से", "हो गया", "कर लिया", "करा लिया", "रिचार्ज हो गया", "हो चुका"
+        "recharge ho gaya", "recharge kar liya", "recharge kara liya", "pehle se recharge",
+        "already recharge", "recharge hua", "recharge kar chuka", "recharge ho chuka",
+        "रिचार्ज हो गया", "रिचार्ज कर लिया", "रिचार्ज करा लिया", "पहले से रिचार्ज",
+        "रिचार्ज हो चुका", "रिचार्ज कर चुका", "करवा लिया", "हो गया रिचार्ज"
     ]):
         disposition = "Already Recharged"
         voc = "Customer ne bataya ki recharge pehle se ho gaya hai"
 
     # 2. Will recharge today
     elif any(w in customer_txt for w in [
-        "aaj kar", "abhi karta", "kar deta", "kar deti", "aaj karwa", "haan karunga", "haan karungi",
-        "आज कर", "अभी करता", "कर देता", "कर देती", "आज करवा", "हाँ करूंगा", "हाँ करूंगी",
-        "कर लूंगा", "कर लूंगी", "आज रिचार्ज", "ठीक है करूंगा"
+        "aaj kar", "abhi karta", "kar deta hoon", "kar deti hoon", "aaj karwa", "aaj recharge",
+        "haan karunga", "haan karungi", "kar lunga aaj", "abhi karta hoon",
+        "आज कर", "आज रिचार्ज", "अभी करता", "कर देता हूँ", "कर देती हूँ",
+        "हाँ करूंगा", "हाँ करूंगी", "कर लूंगा आज", "अभी करता हूँ"
     ]):
         disposition = "Will Recharge Today"
         voc = "Customer ne aaj recharge karne ki baat ki"
