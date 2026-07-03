@@ -483,6 +483,7 @@ tbody tr:hover td { background: #f8faff; }
           <span style="font-size:12px;color:#64748b" id="logCount">Loading...</span>
           <div style="display:flex;gap:8px">
             <button class="btn btn-sm btn-outline" onclick="loadLog()">🔄 Refresh</button>
+            <button class="btn btn-sm btn-primary" onclick="syncBolna()" id="syncBtn">⚡ Sync from Bolna</button>
             <a href="/export-csv" class="btn btn-sm btn-success" style="text-decoration:none">⬇️ Export CSV</a>
           </div>
         </div>
@@ -1044,6 +1045,23 @@ async function checkApiKeyStatus() {
   } catch(e) {}
 }
 
+// ─── Sync from Bolna ─────────────────────────────────────────────────────────
+async function syncBolna() {
+  const btn = document.getElementById('syncBtn');
+  btn.disabled = true; btn.textContent = '⏳ Syncing...';
+  try {
+    const r = await fetch('/api/sync-bolna', {method:'POST'});
+    const d = await r.json();
+    if (d.success) {
+      toast(`✅ Synced ${d.synced} new calls! Total: ${d.total}`);
+      loadLog();
+    } else {
+      toast('❌ Sync failed: ' + d.error, false);
+    }
+  } catch(err) { toast('❌ ' + err.message, false); }
+  btn.disabled = false; btn.textContent = '⚡ Sync from Bolna';
+}
+
 // ─── Auto refresh ─────────────────────────────────────────────────────────────
 setInterval(refreshStats, 30000);
 refreshStats();
@@ -1139,6 +1157,72 @@ def single_call():
         except:
             bolna_error = {}
         return jsonify({"success": False, "error": str(e), "bolna_response": bolna_error, "payload_sent": payload}), 400
+
+
+@app.route("/api/sync-bolna", methods=["POST"])
+def sync_bolna():
+    """Fetch today's call history from Bolna and add missing entries to call_log."""
+    try:
+        synced = 0
+        existing_ids = {e.get("execution_id") for e in call_log}
+
+        # Try Bolna call history endpoints
+        data = []
+        for ep in [
+            f"{BASE_URL}/v1/logs",
+            f"{BASE_URL}/call/logs",
+            f"{BASE_URL}/execution/logs",
+            f"{BASE_URL}/v1/calls",
+        ]:
+            r = req.get(ep, headers=get_headers(), params={"limit": 100}, timeout=15)
+            if r.status_code == 200:
+                result = r.json()
+                data = result if isinstance(result, list) else result.get("data", result.get("calls", result.get("logs", [])))
+                break
+
+        for item in data:
+            call_id = item.get("id") or item.get("execution_id") or item.get("call_id") or ""
+            if not call_id or call_id in existing_ids:
+                continue
+
+            # Only add today's calls
+            created = item.get("created_at", "") or item.get("initiated_at", "")
+            if created:
+                try:
+                    call_date = datetime.fromisoformat(created.replace("Z", "+00:00")).strftime("%d %b")
+                    today = datetime.now().strftime("%d %b")
+                    if call_date != today:
+                        continue
+                except Exception:
+                    pass
+
+            ctx = item.get("context_details", {}) or {}
+            recipient = ctx.get("recipient_data", {}) or {}
+            tel = item.get("telephony_data", {}) or {}
+
+            recording = (item.get("recording_url") or item.get("combined_audio_url") or
+                         f"https://api.bolna.ai/recordings/call/{call_id}")
+
+            new_entry = {
+                "name":          recipient.get("customer_name", "") or tel.get("to_number", ""),
+                "phone":         tel.get("to_number", "") or recipient.get("recipient_phone_number", ""),
+                "expiry":        recipient.get("expiry_date", ""),
+                "days":          recipient.get("days_remaining", ""),
+                "status":        item.get("status", "completed"),
+                "disposition":   "Pending",
+                "voc":           "",
+                "recording_url": recording,
+                "execution_id":  call_id,
+                "time":          datetime.now().strftime("%d %b %H:%M"),
+            }
+            call_log.append(new_entry)
+            existing_ids.add(call_id)
+            synced += 1
+
+        save_json(LOG_FILE, call_log, table="call_log")
+        return jsonify({"success": True, "synced": synced, "total": len(call_log)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 
 @app.route("/api/call/batch", methods=["POST"])
