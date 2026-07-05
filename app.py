@@ -5,8 +5,15 @@ Run: python app.py → http://localhost:5000
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import requests as req
-import csv, io, os, json
+import csv, io, os, json, sys
 from datetime import datetime, timedelta
+
+# Windows console default (cp1252) can't encode emoji in our log prints — force UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 try:
     import psycopg2, psycopg2.extras
     _PG_AVAILABLE = True
@@ -59,13 +66,20 @@ def format_expiry_date(date_str):
     except Exception:
         return date_str  # fallback to original if parse fails
 
-load_dotenv()
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_SCRIPT_DIR, ".env"))
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False  # Allow Devanagari/Unicode in JSON responses
 AGENT_ID = os.getenv("BOLNA_AGENT_ID") or "cf801aa5-ae92-4fc4-9345-5ac2ab9a3c7f"
 FROM_NUM = os.getenv("FROM_PHONE_NUMBER", "")
 BASE_URL = "https://api.bolna.ai"
+
+# ── Cohort Renewal Sheet (Google Sheets, shared "Anyone with link — Viewer") ───
+COHORT_SHEET_ID  = os.getenv("COHORT_SHEET_ID", "1ufKcLgiFKTn6Za524njMQZF9U7672_zLYHCixPAAQsA")
+COHORT_SHEET_GID = os.getenv("COHORT_SHEET_GID", "475175495")
+COHORT_CACHE_TTL = 300  # seconds
+_cohort_cache = {}  # period -> {"data": ..., "ts": ...}
 
 # API key — loaded from env, can also be set via /api/set-apikey endpoint
 _api_key_override = None
@@ -78,7 +92,7 @@ def get_headers():
 
 # ── Persistent storage: PostgreSQL if available, else local JSON ──────────────
 DATABASE_URL  = os.getenv("DATABASE_URL", "")
-_DATA_DIR     = "/data" if os.path.isdir("/data") else "."
+_DATA_DIR     = "/data" if os.path.isdir("/data") else _SCRIPT_DIR
 LOG_FILE      = os.path.join(_DATA_DIR, "call_log.json")
 CALLBACK_FILE = os.path.join(_DATA_DIR, "callback_log.json")
 
@@ -185,6 +199,7 @@ HTML = r"""
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Wiom Retention Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b; font-size: 14px; }
@@ -200,27 +215,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b;
 .header-right { font-size: 12px; opacity: .8; }
 
 /* Layout */
-.main { display: flex; height: calc(100vh - 56px); overflow: hidden; }
-.sidebar {
-  width: 220px; background: #fff; border-right: 1px solid #e2e8f0;
-  padding: 20px 0; flex-shrink: 0; overflow-y: auto;
-}
-.content { flex: 1; overflow-y: auto; padding: 24px; }
+.main { height: calc(100vh - 56px); overflow-y: auto; }
+.content { padding: 24px; max-width: 1200px; margin: 0 auto; }
 
-/* Sidebar nav */
-.nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 11px 20px; cursor: pointer; font-size: 13px;
-  color: #475569; font-weight: 600; transition: .15s;
-  border-left: 3px solid transparent;
-}
-.nav-item:hover { background: #f0f4ff; color: #1e3a8a; }
-.nav-item.active { background: #eff6ff; color: #1e3a8a; border-left-color: #2563eb; }
-.nav-item .icon { font-size: 16px; width: 22px; text-align: center; }
-.nav-sep { height: 1px; background: #e2e8f0; margin: 10px 16px; }
-
-/* Stats row */
-.stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px; }
+/* Summary cards */
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
 .stat-card {
   background: #fff; border-radius: 10px; padding: 14px 16px;
   box-shadow: 0 1px 4px rgba(0,0,0,.07); text-align: center;
@@ -229,45 +228,47 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b;
 .stat-card .lbl { font-size: 11px; color: #64748b; margin-top: 2px; }
 .stat-card.green .num { color: #059669; }
 .stat-card.orange .num { color: #d97706; }
-.stat-card.red .num { color: #dc2626; }
 .stat-card.purple .num { color: #7c3aed; }
 
 /* Section card */
 .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 6px rgba(0,0,0,.07); margin-bottom: 20px; }
 .card-title { font-size: 15px; font-weight: 700; color: #1e3a8a; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
 
-/* Form */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.form-full { grid-column: 1/-1; }
-.form-group label { display: block; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px; }
-.form-group input, .form-group select {
-  width: 100%; padding: 9px 12px; border: 1.5px solid #e2e8f0;
-  border-radius: 8px; font-size: 13px; background: #fafbff; outline: none; transition: .2s;
+/* Period tabs */
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tab-item {
+  padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 700;
+  color: #475569; background: #fff; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.07);
+  transition: .15s;
 }
-.form-group input:focus, .form-group select:focus { border-color: #2563eb; background: #fff; }
+.tab-item:hover { color: #1e3a8a; }
+.tab-item.active { background: #1e3a8a; color: #fff; }
+
+/* Customer-type cards */
+.type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 900px) { .type-grid { grid-template-columns: 1fr; } }
+.type-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+.type-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.type-card-title { font-weight: 700; font-size: 13px; color: #1e3a8a; }
+.type-bracket-row { margin-bottom: 12px; }
+.type-bracket-row:last-child { margin-bottom: 0; }
+.type-bracket-lbl { display: flex; justify-content: space-between; font-size: 11px; color: #475569; margin-bottom: 4px; }
+.stack-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #f1f5f9; }
+.stack-seg { height: 100%; }
+.type-bracket-legend { font-size: 10px; color: #94a3b8; margin-top: 3px; }
+.pp-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: #dcfce7; color: #166534; }
+.pp-badge.neg { background: #fee2e2; color: #991b1b; }
+.rate-bar-row { margin-bottom: 10px; }
+.rate-bar-lbl { display: flex; justify-content: space-between; font-size: 11px; color: #475569; margin-bottom: 3px; }
+.rate-bar-track { height: 8px; border-radius: 4px; background: #f1f5f9; }
+.rate-bar-fill { height: 100%; border-radius: 4px; }
+.rate-bar-frac { font-size: 10px; color: #94a3b8; margin-top: 2px; }
 
 /* Buttons */
 .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: .2s; display: inline-flex; align-items: center; gap: 7px; }
-.btn-primary { background: #1e3a8a; color: #fff; }
-.btn-primary:hover { background: #1d4ed8; }
-.btn-success { background: #059669; color: #fff; }
-.btn-success:hover { background: #047857; }
-.btn-danger  { background: #dc2626; color: #fff; }
 .btn-sm { padding: 5px 12px; font-size: 11px; }
 .btn-outline { background: #fff; border: 1.5px solid #e2e8f0; color: #475569; }
 .btn-outline:hover { border-color: #94a3b8; }
-
-/* Upload zone */
-.upload-zone {
-  border: 2px dashed #93c5fd; border-radius: 10px;
-  padding: 32px; text-align: center; cursor: pointer; background: #f0f7ff;
-  transition: .2s; margin-bottom: 16px;
-}
-.upload-zone:hover { border-color: #2563eb; background: #dbeafe; }
-.upload-zone input { display: none; }
-.upload-zone .upload-icon { font-size: 40px; margin-bottom: 8px; }
-.upload-zone .upload-text { color: #2563eb; font-weight: 700; font-size: 14px; }
-.upload-zone .upload-sub  { color: #94a3b8; font-size: 12px; margin-top: 4px; }
 
 /* Table */
 .tbl-wrap { overflow-x: auto; }
@@ -275,60 +276,6 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 thead th { background: #f8faff; padding: 10px 12px; text-align: left; font-weight: 700; color: #475569; white-space: nowrap; border-bottom: 2px solid #e2e8f0; }
 tbody td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 tbody tr:hover td { background: #f8faff; }
-
-/* Badges */
-.badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.b-pending   { background: #f1f5f9; color: #64748b; }
-.b-queued    { background: #fef3c7; color: #92400e; }
-.b-done      { background: #dcfce7; color: #166534; }
-.b-failed    { background: #fee2e2; color: #991b1b; }
-.b-pay       { background: #d1fae5; color: #065f46; }
-.b-later     { background: #e0f2fe; color: #0369a1; }
-.b-oot       { background: #fef9c3; color: #854d0e; }
-.b-return    { background: #ede9fe; color: #5b21b6; }
-.b-dont      { background: #fce7f3; color: #9d174d; }
-.b-cb        { background: #e0e7ff; color: #3730a3; }
-.b-na        { background: #f1f5f9; color: #475569; }
-
-/* Inline edit */
-.disp-select {
-  border: 1.5px solid #e2e8f0; border-radius: 6px; padding: 4px 8px;
-  font-size: 11px; background: #fafbff; cursor: pointer; max-width: 180px;
-}
-.voc-input {
-  border: 1.5px solid #e2e8f0; border-radius: 6px; padding: 4px 8px;
-  font-size: 11px; background: #fafbff; width: 160px;
-}
-.save-btn {
-  background: #059669; color: #fff; border: none; border-radius: 5px;
-  padding: 4px 10px; font-size: 10px; font-weight: 700; cursor: pointer; margin-left: 4px;
-}
-.save-btn:hover { background: #047857; }
-
-/* Preview table */
-.preview-wrap { overflow-x: auto; max-height: 220px; border: 1px solid #e2e8f0; border-radius: 8px; margin-top: 12px; }
-.preview-wrap table { font-size: 11px; }
-.preview-wrap thead th { position: sticky; top: 0; }
-
-/* Toast */
-.toast {
-  position: fixed; bottom: 24px; right: 24px; padding: 13px 20px;
-  border-radius: 10px; font-size: 13px; font-weight: 600; color: #fff;
-  display: none; z-index: 9999; box-shadow: 0 4px 16px rgba(0,0,0,.25);
-  max-width: 320px;
-}
-
-/* Progress bar */
-.progress-bar { height: 6px; background: #e2e8f0; border-radius: 3px; margin-top: 12px; }
-.progress-fill { height: 100%; background: #2563eb; border-radius: 3px; transition: width .4s; }
-
-/* Info box */
-.info-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; font-size: 12px; color: #1e40af; margin-bottom: 16px; }
-.warn-box { background: #fefce8; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; font-size: 12px; color: #92400e; margin-bottom: 16px; }
-
-/* Inline call result panel */
-.result-panel { background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 10px; padding: 16px; margin-top: 16px; display: none; }
-.result-panel .rid { font-size: 11px; color: #64748b; word-break: break-all; }
 
 .empty-state { text-align: center; padding: 48px 24px; color: #94a3b8; }
 .empty-state .big { font-size: 40px; margin-bottom: 8px; }
@@ -343,358 +290,92 @@ tbody tr:hover td { background: #f8faff; }
 
 <!-- Header -->
 <div class="header">
-  <h1>📞 Wiom Retention Campaign</h1>
+  <h1>📊 Wiom Renewal Report Dashboard</h1>
   <div class="header-right" id="hTime"></div>
 </div>
 
 <div class="main">
-
-  <!-- Sidebar -->
-  <div class="sidebar">
-    <div class="nav-item active" onclick="goTo('upload')" id="n-upload">
-      <span class="icon">📤</span> Upload & Call
-    </div>
-    <div class="nav-item" onclick="goTo('single')" id="n-single">
-      <span class="icon">📱</span> Single Call
-    </div>
-    <div class="nav-sep"></div>
-    <div class="nav-item" onclick="goTo('log')" id="n-log">
-      <span class="icon">📊</span> Call Log
-    </div>
-    <div class="nav-item" onclick="goTo('callbacks')" id="n-callbacks">
-      <span class="icon">🔔</span> Callbacks
-      <span id="cbBadge" style="background:#ef4444;color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;margin-left:auto;display:none">0</span>
-    </div>
-    <div class="nav-sep"></div>
-    <div class="nav-item" onclick="goTo('sop')" id="n-sop">
-      <span class="icon">📖</span> SOP Rules
-    </div>
-    <div class="nav-sep"></div>
-    <div class="nav-item" onclick="goTo('setup')" id="n-setup">
-      <span class="icon">⚙️</span> Setup
-      <span id="setupBadge" style="background:#ef4444;color:#fff;border-radius:20px;padding:1px 7px;font-size:10px;margin-left:auto">!</span>
-    </div>
-  </div>
-
-  <!-- Content -->
   <div class="content">
 
-    <!-- Stats -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="font-size:12px;color:#64748b">
+          Live report — sourced directly from the <a href="https://docs.google.com/spreadsheets/d/1ufKcLgiFKTn6Za524njMQZF9U7672_zLYHCixPAAQsA/edit?gid=475175495#gid=475175495" target="_blank" style="color:#2563eb">Cohort Google Sheet</a>.
+          Cohort = how the customer was reached before their plan expired (<b>Call</b> = agent call, <b>AI Call</b> = AI voice call, <b>No Call</b> = no outreach).
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+          <span style="font-size:11px;color:#94a3b8" id="cohortMeta"></span>
+          <button class="btn btn-sm btn-outline" onclick="loadReport(true)">🔄 Refresh from Sheet</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Period Tabs -->
+    <div class="tabs">
+      <div class="tab-item active" onclick="switchPeriod('till21')" id="tab-till21">📆 Till 21 (No AI Call)</div>
+      <div class="tab-item" onclick="switchPeriod('after21')" id="tab-after21">🤖 After 21 (AI Call)</div>
+    </div>
+
+    <!-- Summary -->
     <div class="stats">
-      <div class="stat-card"><div class="num" id="sTotal">0</div><div class="lbl">Total</div></div>
-      <div class="stat-card orange"><div class="num" id="sQueued">0</div><div class="lbl">Queued</div></div>
-      <div class="stat-card"><div class="num" id="sDone">0</div><div class="lbl">Completed</div></div>
-      <div class="stat-card green"><div class="num" id="sWillPay">0</div><div class="lbl">Will Recharge</div></div>
-      <div class="stat-card purple"><div class="num" id="sCB">0</div><div class="lbl">Callbacks</div></div>
-      <div class="stat-card red"><div class="num" id="sDont">0</div><div class="lbl">Don't Want</div></div>
+      <div class="stat-card"><div class="num" id="sumTotal">0</div><div class="lbl">Total Customers</div></div>
+      <div class="stat-card green"><div class="num" id="sumRate">0%</div><div class="lbl">Overall Renewal Rate</div></div>
+      <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div></div>
+      <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div></div>
+      <div class="stat-card orange" id="sumNoCallCard"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div></div>
     </div>
 
-    <!-- ══════ UPLOAD & CALL ══════ -->
-    <div id="p-upload">
-      <div class="card">
-        <div class="card-title">📤 Upload Customer Data & Start Calls</div>
-
-        <div class="info-box">
-          📋 CSV mein yeh columns chahiye:<br/>
-          <code style="font-size:11px">recipient_phone_number, customer_name, expiry_date, days_remaining, agent_name</code><br/>
-          <a href="/sample-csv" style="color:#2563eb;font-size:11px;text-decoration:none">⬇️ Sample CSV download karo</a>
-        </div>
-
-        <!-- Drop zone -->
-        <div class="upload-zone" onclick="document.getElementById('csvFile').click()" id="dropZone">
-          <input type="file" id="csvFile" accept=".csv" onchange="handleFile(event)"/>
-          <div class="upload-icon">📁</div>
-          <div class="upload-text" id="uploadText">CSV file yahan click karke select karo</div>
-          <div class="upload-sub">Sirf .csv files — max 10,000 rows</div>
-        </div>
-
-        <!-- Preview -->
-        <div id="previewSection" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <span style="font-size:13px;font-weight:700;color:#1e3a8a" id="previewCount"></span>
-            <button class="btn btn-sm btn-outline" onclick="clearFile()">✕ Clear</button>
-          </div>
-          <div class="preview-wrap" id="previewWrap"></div>
-        </div>
-
-        <!-- Start button -->
-        <div style="margin-top:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap" id="startSection" style="display:none">
-          <button class="btn btn-success" onclick="startBatchCalls()" id="startBtn" style="font-size:15px;padding:12px 28px">
-            🚀 Start Calls
-          </button>
-          <span style="font-size:12px;color:#64748b" id="startInfo"></span>
-        </div>
-
-        <!-- Progress -->
-        <div id="batchProgress" style="display:none;margin-top:16px">
-          <div style="font-size:12px;color:#64748b;margin-bottom:6px" id="progressText"></div>
-          <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
-        </div>
-
-        <!-- Result -->
-        <div class="result-panel" id="batchResult">
-          <div style="font-weight:700;color:#166534;margin-bottom:6px">✅ Calls Started!</div>
-          <div class="rid" id="batchResultText"></div>
-          <button class="btn btn-sm btn-primary" style="margin-top:10px" onclick="goTo('log')">📊 Call Log dekho</button>
-        </div>
-      </div>
+    <div id="reportEmpty" class="empty-state" style="display:none">
+      <div class="big">📈</div>Sheet load nahi ho payi — <span id="reportErr"></span>
     </div>
 
-    <!-- ══════ SINGLE CALL ══════ -->
-    <div id="p-single" style="display:none">
-      <div class="card">
-        <div class="card-title">📱 Single Customer Call</div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Customer Name *</label>
-            <input id="s_name" placeholder="e.g. Ramesh Kumar"/>
-          </div>
-          <div class="form-group">
-            <label>Phone Number * (with +91)</label>
-            <input id="s_phone" placeholder="+919876543210"/>
-          </div>
-          <div class="form-group">
-            <label>Plan Expiry Date</label>
-            <input type="date" id="s_expiry"/>
-          </div>
-          <div class="form-group">
-            <label>Days Remaining</label>
-            <input type="number" id="s_days" placeholder="e.g. 4" min="1" max="15"/>
-          </div>
-        </div>
-        <div style="margin-top:18px;display:flex;gap:10px">
-          <button class="btn btn-primary" onclick="triggerSingle()" style="font-size:14px;padding:11px 24px">
-            📞 Call Karo
-          </button>
-          <button class="btn btn-outline" onclick="clearSingle()">Clear</button>
-        </div>
-        <div class="result-panel" id="singleResult">
-          <div style="font-weight:700;color:#166534;margin-bottom:4px">✅ Call Queued!</div>
-          <div class="rid" id="singleResultId"></div>
-        </div>
-      </div>
-    </div>
+    <div id="reportBody" style="display:none">
 
-    <!-- ══════ CALL LOG ══════ -->
-    <div id="p-log" style="display:none">
+      <!-- ══════ DATE-WISE ══════ -->
       <div class="card">
-        <div class="card-title">📊 Call Log</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-          <span style="font-size:12px;color:#64748b" id="logCount">Loading...</span>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-sm btn-outline" onclick="loadLog()">🔄 Refresh</button>
-            <button class="btn btn-sm btn-primary" onclick="syncBolna()" id="syncBtn">⚡ Sync from Bolna</button>
-            <a href="/export-csv" class="btn btn-sm btn-success" style="text-decoration:none">⬇️ Export CSV</a>
-          </div>
+        <div class="card-title">📅 Renewal Comparison — Date-wise</div>
+        <div style="position:relative;height:340px">
+          <canvas id="dateChart"></canvas>
         </div>
-        <div class="tbl-wrap">
+        <div class="tbl-wrap" style="margin-top:16px">
           <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Name</th>
-                <th>Phone</th>
-                <th>Expiry</th>
-                <th>Days</th>
-                <th>Call Status</th>
-                <th>Disposition</th>
-                <th>VOC / Remarks</th>
-                <th>Recording</th>
-                <th>Time</th>
-              </tr>
-            </thead>
-            <tbody id="logBody">
-              <tr><td colspan="10"><div class="empty-state"><div class="big">📭</div>Koi call abhi nahi hua</div></td></tr>
-            </tbody>
+            <thead><tr><th>Date</th><th>Cohort</th><th>Total</th><th>Renewed</th><th>Renewal %</th></tr></thead>
+            <tbody id="dateTblBody"></tbody>
           </table>
         </div>
       </div>
-    </div>
 
-    <!-- ══════ CALLBACKS ══════ -->
-    <div id="p-callbacks" style="display:none">
 
+      <!-- ══════ PLAN OPTED BY RENEWED CUSTOMERS ══════ -->
       <div class="card">
-        <div class="card-title">🔔 Schedule Follow-Up Call</div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Customer Name *</label>
-            <input id="cb_name" placeholder="Ramesh Kumar"/>
-          </div>
-          <div class="form-group">
-            <label>Phone *</label>
-            <input id="cb_phone" placeholder="+919876543210"/>
-          </div>
-          <div class="form-group">
-            <label>Expiry Date</label>
-            <input type="date" id="cb_expiry"/>
-          </div>
-          <div class="form-group">
-            <label>Days Remaining</label>
-            <input type="number" id="cb_days" min="1" max="15"/>
-          </div>
-          <div class="form-group">
-            <label>Callback Date & Time *</label>
-            <input type="datetime-local" id="cb_dt"/>
-          </div>
-          <div class="form-group">
-            <label>Reason / Notes</label>
-            <input id="cb_reason" placeholder="e.g. Out of town, returning Sunday"/>
-          </div>
-        </div>
-        <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary" onclick="schedCB()">🔔 Schedule</button>
-          <button class="btn btn-sm btn-outline" onclick="quickTime('morning')">+ Kal 10am</button>
-          <button class="btn btn-sm btn-outline" onclick="quickTime('evening')">+ Aaj 6pm</button>
-          <button class="btn btn-sm btn-outline" onclick="quickTime('2days')">+ 2 Din Baad</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">📋 Pending Callbacks</div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:12px">
-          <span style="font-size:12px;color:#64748b" id="cbCount">Loading...</span>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-sm btn-outline" onclick="loadCBs()">🔄 Refresh</button>
-            <a href="/export-callbacks" class="btn btn-sm btn-success" style="text-decoration:none">⬇️ Export</a>
-          </div>
-        </div>
+        <div class="card-title">💳 Plan Opted by Renewed Customers</div>
+        <div style="font-size:12px;color:#64748b;margin:-10px 0 16px">Cohort breakdown per plan bracket, among renewed customers only.</div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Scheduled</th><th>Reason</th><th>Status</th><th>Action</th></tr></thead>
-            <tbody id="cbBody">
-              <tr><td colspan="7"><div class="empty-state"><div class="big">🔔</div>Koi callback pending nahi</div></td></tr>
-            </tbody>
+            <thead id="planTblHead"></thead>
+            <tbody id="planTblBody"></tbody>
           </table>
         </div>
       </div>
-    </div>
 
-    <!-- ══════ SOP ══════ -->
-    <div id="p-sop" style="display:none">
+      <!-- ══════ CUSTOMER TYPE — PLAN BREAKDOWN ══════ -->
       <div class="card">
-        <div class="card-title">📖 Campaign Rules — DO's & DON'Ts</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-          <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:16px">
-            <div style="font-weight:700;color:#166534;margin-bottom:10px">✅ DO's</div>
-            <ul style="margin-left:16px;line-height:2;font-size:12px;color:#166534">
-              <li>Script exactly follow karo</li>
-              <li>Customer ka naam verify karo</li>
-              <li>Exact expiry date batao</li>
-              <li>Dono options equally present karo</li>
-              <li>Disposition + VOC immediately log karo</li>
-              <li>Callback schedule karo agar customer busy ho</li>
-            </ul>
-          </div>
-          <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:16px">
-            <div style="font-weight:700;color:#991b1b;margin-bottom:10px">❌ DON'Ts</div>
-            <ul style="margin-left:16px;line-height:2;font-size:12px;color:#991b1b">
-              <li>Koi discount / offer mat dena</li>
-              <li>Negotiate mat karo</li>
-              <li>Pressure mat daalo</li>
-              <li>"Last chance", "device jayega" mat kaho</li>
-              <li>Recharge duration mat batao (pata nahi)</li>
-              <li>Galat disposition mat lagao</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="card-title">🏷️ Disposition Guide</div>
-        <table>
-          <thead><tr><th>Disposition</th><th>Kab use karein</th><th>Next Action</th></tr></thead>
-          <tbody>
-            <tr><td><span class="badge b-pay">Will Recharge Today</span></td><td>Customer ne aaj karne ki baat ki</td><td>24 hrs mein verify karo</td></tr>
-            <tr><td><span class="badge b-later">Will Recharge Later</span></td><td>Interested hai, abhi nahi</td><td>Window ke andar follow up karo</td></tr>
-            <tr><td><span class="badge b-done">Already Recharged</span></td><td>Pehle se recharge kar liya</td><td>CRM update karo</td></tr>
-            <tr><td><span class="badge b-oot">Out of Town</span></td><td>Customer bahar hai</td><td>Return date pe callback karo</td></tr>
-            <tr><td><span class="badge b-return">Wants Device Return</span></td><td>Service nahi chahiye</td><td>VOC reason note karo</td></tr>
-            <tr><td><span class="badge b-dont">Don't Want – Service Issue</span></td><td>Technical/slow internet</td><td>VOC log karo, TL escalate</td></tr>
-            <tr><td><span class="badge b-dont">Don't Want – Personal</span></td><td>Shifted, switched etc</td><td>VOC note karo</td></tr>
-            <tr><td><span class="badge b-cb">Callback Scheduled</span></td><td>Busy tha, time maanga</td><td>Schedule karo</td></tr>
-            <tr><td><span class="badge b-na">Not Answered / Busy</span></td><td>No pickup / switched off</td><td>Retry — max 3x day</td></tr>
-          </tbody>
-        </table>
-
-        <div class="card-title" style="margin-top:20px">💬 VOC — Common Reasons to Capture</div>
-        <table>
-          <thead><tr><th>Category</th><th>Sub-Reasons (note customer ke exact words)</th></tr></thead>
-          <tbody>
-            <tr><td>Service Issue</td><td>Internet slow, frequently disconnects, no signal, router problem</td></tr>
-            <tr><td>Personal</td><td>Shifted to new house, moved city, using mobile data only, financial reason</td></tr>
-            <tr><td>Price</td><td>Plan too expensive, competitor cheaper, not worth it</td></tr>
-            <tr><td>Usage</td><td>Don't use internet, children gone, work from office now</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ══════ SETUP ══════ -->
-    <div id="p-setup" style="display:none">
-      <div class="card">
-        <div class="card-title">⚙️ Setup — API Configuration</div>
-
-        <div id="setupStatus" class="warn-box" style="margin-bottom:20px">
-          ⚠️ API Key not set — calls will fail. Enter the key below and click Save.
-        </div>
-
-        <div class="form-grid">
-          <div class="form-group form-full">
-            <label>Bolna API Key *</label>
-            <input id="setupApiKey" type="password" placeholder="bn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style="font-family:monospace"/>
-            <div style="font-size:11px;color:#94a3b8;margin-top:4px">This is needed to make AI calls. Get it from your Bolna dashboard.</div>
-          </div>
-        </div>
-
-        <div style="margin-top:18px;display:flex;gap:10px;align-items:center">
-          <button class="btn btn-success" onclick="saveApiKey()" style="font-size:14px;padding:11px 24px">
-            💾 Save API Key
-          </button>
-          <button class="btn btn-outline" onclick="document.getElementById('setupApiKey').type = document.getElementById('setupApiKey').type === 'password' ? 'text' : 'password'">
-            👁 Show/Hide
-          </button>
-        </div>
-
-        <div class="result-panel" id="setupResult" style="margin-top:16px">
-          <div style="font-weight:700;color:#166534">✅ API Key saved! You can now make calls.</div>
-        </div>
+        <div class="card-title">🗂️ Customer Type — Plan Breakdown (Renewed)</div>
+        <div id="typeBreakdownGrid" class="type-grid"></div>
       </div>
 
+      <!-- ══════ CUSTOMER TYPE — CALL VS NO-CALL RENEWAL RATE ══════ -->
       <div class="card">
-        <div class="card-title">ℹ️ Important Note</div>
-        <div class="warn-box" style="margin-bottom:0">
-          <b>After every Railway restart or redeploy</b>, you need to re-enter the API key here once. This is a one-time step each time the server restarts.
-        </div>
+        <div class="card-title">📈 Customer Type — Renewal Rate by Cohort</div>
+        <div id="typeRateGrid" class="type-grid"></div>
       </div>
+
     </div>
 
   </div><!-- /content -->
 </div><!-- /main -->
 
-<div class="toast" id="toast"></div>
-
 <script>
-// ─── Navigation ───────────────────────────────────────────────────────────────
-const pages = ['upload','single','log','callbacks','sop','setup'];
-
-function goTo(pg) {
-  pages.forEach(p => {
-    document.getElementById('p-'+p).style.display = p===pg ? 'block' : 'none';
-    document.getElementById('n-'+p).classList.toggle('active', p===pg);
-  });
-  if (pg==='log')       loadLog();
-  if (pg==='callbacks') loadCBs();
-  if (pg==='upload')    refreshStats();
-}
-
-// ─── Toast ────────────────────────────────────────────────────────────────────
-function toast(msg, ok=true) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.background = ok ? '#059669' : '#dc2626';
-  t.style.display = 'block';
-  setTimeout(() => t.style.display='none', 4000);
-}
-
 // ─── Clock ────────────────────────────────────────────────────────────────────
 function tick() {
   document.getElementById('hTime').textContent =
@@ -702,370 +383,185 @@ function tick() {
 }
 setInterval(tick, 1000); tick();
 
-// ─── File Upload ──────────────────────────────────────────────────────────────
-let uploadedRows = [];
+// ─── Report Dashboard (backed entirely by the Google Sheet) ──────────────────
+const COHORT_COLORS = { 'Call': '#2563eb', 'AI Call': '#7c3aed', 'No Call': '#f97316' };
+let dateChartObj = null;
+let currentPeriod = 'till21';
 
-function handleFile(e) {
-  const f = e.target.files[0]; if (!f) return;
-  document.getElementById('uploadText').textContent = '✅ ' + f.name;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const lines = ev.target.result.trim().split('\n');
-    const headers = lines[0].split(',').map(h=>h.trim());
-    uploadedRows = lines.slice(1).filter(l=>l.trim()).map(l=>{
-      const vals = l.split(',');
-      const obj = {};
-      headers.forEach((h,i) => obj[h] = (vals[i]||'').trim());
-      return obj;
-    });
-
-    // Preview
-    const count = uploadedRows.length;
-    document.getElementById('previewCount').textContent = `${count} customers loaded`;
-    document.getElementById('startInfo').textContent = `${count} calls trigger honge`;
-    document.getElementById('startSection').style.display = 'flex';
-
-    // Build preview table
-    let html = '<table><thead><tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr></thead><tbody>';
-    uploadedRows.slice(0,10).forEach(r => {
-      html += '<tr>' + headers.map(h=>`<td>${r[h]||''}</td>`).join('') + '</tr>';
-    });
-    if (uploadedRows.length > 10) html += `<tr><td colspan="${headers.length}" style="text-align:center;color:#94a3b8;padding:8px">... aur ${uploadedRows.length-10} rows</td></tr>`;
-    html += '</tbody></table>';
-    document.getElementById('previewWrap').innerHTML = html;
-    document.getElementById('previewSection').style.display = 'block';
-  };
-  reader.readAsText(f);
+function switchPeriod(period) {
+  currentPeriod = period;
+  ['till21','after21'].forEach(p => document.getElementById('tab-'+p).classList.toggle('active', p===period));
+  loadReport();
 }
 
-function clearFile() {
-  document.getElementById('csvFile').value = '';
-  document.getElementById('uploadText').textContent = 'CSV file yahan click karke select karo';
-  document.getElementById('previewSection').style.display = 'none';
-  document.getElementById('startSection').style.display = 'none';
-  document.getElementById('batchResult').style.display = 'none';
-  uploadedRows = [];
-}
-
-async function startBatchCalls() {
-  const f = document.getElementById('csvFile').files[0];
-  if (!f || uploadedRows.length === 0) { toast('Pehle CSV file select karo!', false); return; }
-
-  const btn = document.getElementById('startBtn');
-  btn.disabled = true; btn.textContent = '⏳ Starting...';
-
-  document.getElementById('batchProgress').style.display = 'block';
-  document.getElementById('progressText').textContent = 'Calls queue ho rahe hain...';
-  document.getElementById('progressFill').style.width = '30%';
-
-  const fd = new FormData();
-  fd.append('file', f);
-
+async function loadReport(forceRefresh=false) {
+  document.getElementById('reportEmpty').style.display = 'none';
   try {
-    const r = await fetch('/api/call/batch', {method:'POST', body:fd});
-    const d = await r.json();
+    const params = new URLSearchParams({ period: currentPeriod });
+    if (forceRefresh) params.set('refresh', '1');
+    const res = await fetch('/api/cohort-data?' + params.toString());
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
 
-    document.getElementById('progressFill').style.width = '100%';
+    document.getElementById('reportBody').style.display = 'block';
+    document.getElementById('cohortMeta').textContent = data.row_count + ' rows synced';
 
-    if (d.success) {
-      document.getElementById('progressText').textContent = `✅ ${d.total} calls queued successfully!`;
-      document.getElementById('batchResult').style.display = 'block';
-      document.getElementById('batchResultText').textContent =
-        `Batch ID: ${d.batch_id || '—'} | Total: ${d.total} calls`;
-      toast(`✅ ${d.total} calls started!`);
-      refreshStats();
-    } else {
-      document.getElementById('progressText').textContent = 'Error: ' + d.error;
-      toast('❌ ' + d.error, false);
-    }
-  } catch(err) {
-    toast('❌ Network error: ' + err.message, false);
+    renderSummary(data.summary);
+    renderDateChart(data);
+    renderDateTable(data);
+    renderPlanTable(data.cohorts, data.plan_breakdown);
+    renderTypeBreakdown(data.cohorts, data.type_breakdown);
+    renderTypeRate(data.cohorts, data.type_cohort_rate);
+  } catch (e) {
+    document.getElementById('reportBody').style.display = 'none';
+    document.getElementById('reportEmpty').style.display = 'block';
+    document.getElementById('reportErr').textContent = e.message;
   }
-
-  btn.disabled = false; btn.textContent = '🚀 Start Calls';
 }
 
-// ─── Single Call ──────────────────────────────────────────────────────────────
-async function triggerSingle() {
-  const name  = document.getElementById('s_name').value.trim();
-  const phone = document.getElementById('s_phone').value.trim();
-  const expiry = document.getElementById('s_expiry').value;
-  const days   = document.getElementById('s_days').value;
+function renderSummary(s) {
+  document.getElementById('sumTotal').textContent = s.total;
+  document.getElementById('sumRate').textContent = s.rate + '%';
+  document.getElementById('sumCall').textContent   = (s.by_cohort['Call']    ?.rate ?? 0) + '%';
+  document.getElementById('sumAi').textContent     = (s.by_cohort['AI Call']?.rate ?? 0) + '%';
+  document.getElementById('sumNoCall').textContent = (s.by_cohort['No Call']?.rate ?? 0) + '%';
+}
 
-  if (!name || !phone) { toast('Name aur phone zaroori hai!', false); return; }
-
-  try {
-    const r = await fetch('/api/call/single', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name, phone, expiry, days})
-    });
-    const d = await r.json();
-    if (d.success) {
-      document.getElementById('singleResult').style.display = 'block';
-      document.getElementById('singleResultId').textContent = 'Execution ID: ' + d.execution_id;
-      toast(`✅ Call queued for ${name}!`);
-      refreshStats();
-    } else {
-      toast('❌ ' + d.error, false);
+function renderDateChart(data) {
+  const ctx = document.getElementById('dateChart').getContext('2d');
+  const datasets = data.cohorts.map(c => ({
+    label: c,
+    data: data.series[c].map(p => p.rate),
+    backgroundColor: COHORT_COLORS[c] || '#64748b',
+  }));
+  if (dateChartObj) dateChartObj.destroy();
+  dateChartObj = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: data.dates, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: { callbacks: { afterLabel: (item) => {
+          const p = data.series[item.dataset.label][item.dataIndex];
+          return `${p.renewed} / ${p.total} renewed`;
+        }}}
+      },
+      scales: {
+        y: { beginAtZero: true, max: 100, title: { display: true, text: 'Renewal Rate (%)' } },
+        x: { title: { display: true, text: 'Plan Expiry Date (Cohort Day)' } }
+      }
     }
-  } catch(err) { toast('❌ ' + err.message, false); }
+  });
 }
 
-function clearSingle() {
-  ['s_name','s_phone','s_expiry','s_days'].forEach(id => document.getElementById(id).value='');
-  document.getElementById('singleResult').style.display = 'none';
+function renderDateTable(data) {
+  const body = document.getElementById('dateTblBody');
+  let html = '';
+  data.dates.forEach((date, i) => {
+    data.cohorts.forEach(c => {
+      const p = data.series[c][i];
+      html += `<tr><td>${date}</td><td>${c}</td><td>${p.total}</td><td>${p.renewed}</td><td>${p.rate}%</td></tr>`;
+    });
+  });
+  body.innerHTML = html || '<tr><td colspan="5"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>';
 }
 
-// ─── Call Log ─────────────────────────────────────────────────────────────────
-const BADGE_MAP = {
-  'queued':'b-queued', 'completed':'b-done', 'failed':'b-failed',
-  'Will Recharge Today':'b-pay', 'Will Recharge Later':'b-later',
-  'Already Recharged':'b-done', 'Out of Town':'b-oot',
-  'Wants Device Return':'b-return', 'Device Already Returned':'b-return',
-  "Don't Want – Service Issue":'b-dont', "Don't Want – Personal Reason":'b-dont',
-  'Callback Scheduled':'b-cb', 'Not Answered / Busy':'b-na',
-  'Wrong Number':'b-na', 'Pending':'b-pending'
-};
+// ─── Plan Opted by Renewed Customers ─────────────────────────────────────────
+function renderPlanTable(cohorts, rows) {
+  const head = document.getElementById('planTblHead');
+  head.innerHTML = '<tr><th>Plan Amount</th>' + cohorts.map(c => `<th>${c}</th>`).join('') +
+    '<th>Total</th><th>Split (' + cohorts.join(' vs ') + ')</th></tr>';
 
-const DISPOSITIONS = [
-  "Pending","Will Recharge Today","Will Recharge Later","Already Recharged",
-  "Out of Town","Wants Device Return","Device Already Returned",
-  "Don't Want – Service Issue","Don't Want – Personal Reason",
-  "Callback Scheduled","Not Answered / Busy","Wrong Number"
-];
+  const body = document.getElementById('planTblBody');
+  body.innerHTML = rows.map(r => {
+    const cells = cohorts.map(c => {
+      const cd = r.by_cohort[c] || {count:0, pct:0};
+      return `<td><b style="color:${COHORT_COLORS[c]||'#1e3a8a'}">${cd.count}</b> <span style="color:#94a3b8">${cd.pct}%</span></td>`;
+    }).join('');
+    const bar = cohorts.map(c => {
+      const cd = r.by_cohort[c] || {count:0};
+      const pct = r.total ? (cd.count / r.total * 100) : 0;
+      return `<div class="stack-seg" style="width:${pct}%;background:${COHORT_COLORS[c]||'#64748b'}"></div>`;
+    }).join('');
+    return `<tr>
+      <td><b>${r.bracket}</b></td>
+      ${cells}
+      <td>${r.total}</td>
+      <td style="min-width:180px">
+        <div class="stack-bar">${bar}</div>
+        <div class="type-bracket-legend">${r.pct_of_total}% of renewals</div>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="${cohorts.length+3}"><div class="empty-state"><div class="big">💳</div>No data</div></td></tr>`;
+}
 
-async function loadLog() {
-  const r = await fetch('/api/log');
-  const data = await r.json();
-  document.getElementById('logCount').textContent = data.length + ' records';
-  refreshStats(data);
-
-  const tbody = document.getElementById('logBody');
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><div class="big">📭</div>Koi call abhi nahi hua</div></td></tr>';
+// ─── Customer Type — Plan Breakdown ──────────────────────────────────────────
+function renderTypeBreakdown(cohorts, types) {
+  const grid = document.getElementById('typeBreakdownGrid');
+  if (!types.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="big">🗂️</div>No data</div>';
     return;
   }
-
-  tbody.innerHTML = [...data].reverse().map((c, i) => {
-    const idx = data.length - i;
-    const execId = c.execution_id || '';
-
-    // Disposition dropdown
-    const dispOpts = DISPOSITIONS.map(d =>
-      `<option value="${d}" ${c.disposition===d?'selected':''}>${d}</option>`
-    ).join('');
-    const dispCell = `<select class="disp-select" id="disp_${idx}" onchange="saveRow(${idx-1},'${execId}')">${dispOpts}</select>`;
-
-    // VOC input
-    const vocCell = `<input class="voc-input" id="voc_${idx}" placeholder="Customer ne kya kaha..." value="${(c.voc||'').replace(/"/g,"'")}" onblur="saveRow(${idx-1},'${execId}')"/>`;
-
-    // Recording
-    let recCell = '—';
-    if (c.recording_url) {
-      recCell = `<audio controls style="height:26px;width:150px"><source src="${c.recording_url}" type="audio/mpeg"></audio>`;
-    } else if (execId) {
-      recCell = `<button class="btn btn-sm btn-outline" onclick="fetchRec('${execId}',${idx-1})" style="font-size:10px">Fetch 🎙️</button>`;
-    }
-
-    return `<tr id="row_${idx}">
-      <td style="color:#94a3b8;font-size:11px">${idx}</td>
-      <td><b>${c.name}</b></td>
-      <td style="font-size:11px;color:#64748b">${c.phone}</td>
-      <td style="font-size:11px">${c.expiry||'—'}</td>
-      <td style="text-align:center">${c.days||'—'}</td>
-      <td><span class="badge ${BADGE_MAP[c.status]||'b-pending'}">${c.status||'queued'}</span></td>
-      <td>${dispCell}</td>
-      <td>${vocCell}</td>
-      <td>${recCell}</td>
-      <td style="font-size:11px;color:#94a3b8;white-space:nowrap">${c.time}</td>
-    </tr>`;
+  grid.innerHTML = types.map(t => {
+    const rows = t.brackets.map(b => {
+      const bar = cohorts.map(c => {
+        const cnt = b.by_cohort[c] || 0;
+        const pct = b.total ? (cnt / b.total * 100) : 0;
+        return `<div class="stack-seg" style="width:${pct}%;background:${COHORT_COLORS[c]||'#64748b'}"></div>`;
+      }).join('');
+      const legend = cohorts.map(c => `${c}: ${b.by_cohort[c] || 0}`).join(' · ');
+      return `<div class="type-bracket-row">
+        <div class="type-bracket-lbl"><span>${b.bracket}</span><span>${b.total} customers</span></div>
+        <div class="stack-bar">${bar}</div>
+        <div class="type-bracket-legend">${legend}</div>
+      </div>`;
+    }).join('');
+    return `<div class="type-card">
+      <div class="type-card-head">
+        <span class="type-card-title">${t.type}</span>
+        <span style="font-size:11px;color:#64748b">${t.total_renewed} renewed</span>
+      </div>
+      ${rows}
+    </div>`;
   }).join('');
 }
 
-async function saveRow(realIdx, execId) {
-  const dispIdx = realIdx + 1;
-  const displayIdx = document.querySelectorAll('#logBody tr').length - realIdx;
-
-  // We need the actual index in reverse — find by execution_id
-  const disp = document.getElementById(`disp_${displayIdx}`)?.value || '';
-  const voc  = document.getElementById(`voc_${displayIdx}`)?.value  || '';
-
-  await fetch('/api/update-disposition', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({execution_id: execId, disposition: disp, voc})
-  });
-}
-
-async function fetchRec(execId, idx) {
-  const r = await fetch(`/api/fetch-recording/${execId}`);
-  const d = await r.json();
-  if (d.recording_url) {
-    toast('Recording mil gayi!');
-    loadLog();
-  } else {
-    toast('Recording abhi available nahi — ' + (d.error||'check after call ends'), false);
-  }
-}
-
-// ─── Stats ────────────────────────────────────────────────────────────────────
-async function refreshStats(data) {
-  if (!data) { const r = await fetch('/api/log'); data = await r.json(); }
-  document.getElementById('sTotal').textContent   = data.length;
-  document.getElementById('sQueued').textContent  = data.filter(c=>c.status==='queued').length;
-  document.getElementById('sDone').textContent    = data.filter(c=>c.status==='completed').length;
-  document.getElementById('sWillPay').textContent = data.filter(c=>['Will Recharge Today','Will Recharge Later','Already Recharged'].includes(c.disposition)).length;
-  document.getElementById('sCB').textContent      = data.filter(c=>c.disposition==='Callback Scheduled').length;
-  document.getElementById('sDont').textContent    = data.filter(c=>(c.disposition||'').startsWith("Don't Want")).length;
-
-  const cbPend = data.filter(c=>c.disposition==='Callback Scheduled').length;
-  const badge = document.getElementById('cbBadge');
-  badge.textContent = cbPend;
-  badge.style.display = cbPend > 0 ? 'inline' : 'none';
-}
-
-// ─── Callbacks ────────────────────────────────────────────────────────────────
-function quickTime(when) {
-  const now = new Date(); const dt = new Date();
-  if (when==='morning') { dt.setDate(dt.getDate()+1); dt.setHours(10,0,0,0); }
-  else if (when==='evening') { dt.setHours(18,0,0,0); if(dt<now) dt.setDate(dt.getDate()+1); }
-  else if (when==='2days') { dt.setDate(dt.getDate()+2); dt.setHours(10,0,0,0); }
-  const p=n=>String(n).padStart(2,'0');
-  document.getElementById('cb_dt').value = `${dt.getFullYear()}-${p(dt.getMonth()+1)}-${p(dt.getDate())}T${p(dt.getHours())}:${p(dt.getMinutes())}`;
-}
-
-async function schedCB() {
-  const name = document.getElementById('cb_name').value.trim();
-  const phone = document.getElementById('cb_phone').value.trim();
-  const dt = document.getElementById('cb_dt').value;
-  if (!name || !phone || !dt) { toast('Name, phone aur time zaroori hai!', false); return; }
-
-  const r = await fetch('/api/callback/schedule', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name, phone,
-      expiry: document.getElementById('cb_expiry').value,
-      days:   document.getElementById('cb_days').value,
-      reason: document.getElementById('cb_reason').value.trim(),
-      scheduled_at: dt
-    })
-  });
-  const d = await r.json();
-  if (d.success) {
-    toast('✅ Callback scheduled!');
-    loadCBs();
-    ['cb_name','cb_phone','cb_expiry','cb_days','cb_dt','cb_reason'].forEach(id=>document.getElementById(id).value='');
-  } else {
-    toast('❌ ' + d.error, false);
-  }
-}
-
-async function loadCBs() {
-  const r = await fetch('/api/callbacks');
-  const data = await r.json();
-  const pending = data.filter(c=>c.status==='pending').length;
-  document.getElementById('cbCount').textContent = pending + ' pending';
-  const badge = document.getElementById('cbBadge');
-  badge.textContent = pending; badge.style.display = pending>0?'inline':'none';
-
-  const tbody = document.getElementById('cbBody');
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="big">🔔</div>Koi callback pending nahi</div></td></tr>';
+// ─── Customer Type — Renewal Rate by Cohort ──────────────────────────────────
+function renderTypeRate(cohorts, types) {
+  const grid = document.getElementById('typeRateGrid');
+  if (!types.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="big">📈</div>No data</div>';
     return;
   }
-  const now = new Date();
-  tbody.innerHTML = [...data].reverse().map((c,i)=>{
-    const dt = new Date(c.scheduled_at);
-    const overdue = dt < now && c.status==='pending';
-    const timeStr = dt.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-    return `<tr style="${overdue?'background:#fff7ed':''}">
-      <td style="color:#94a3b8">${data.length-i}</td>
-      <td><b>${c.name}</b></td>
-      <td style="font-size:11px">${c.phone}</td>
-      <td style="${overdue?'color:#dc2626;font-weight:700':''}">
-        ${overdue?'⚠️ ':''}${timeStr}
-      </td>
-      <td style="font-size:11px;color:#64748b">${c.reason||'—'}</td>
-      <td><span class="badge ${c.status==='done'?'b-done':overdue?'b-dont':'b-cb'}">${c.status==='done'?'Done':overdue?'Overdue':'Pending'}</span></td>
-      <td>
-        <button class="btn btn-sm btn-primary" onclick="callNow('${c.phone}','${c.name}','${c.expiry||''}','${c.days||''}')">
-          📞 Call Now
-        </button>
-      </td>
-    </tr>`;
+  grid.innerHTML = types.map(t => {
+    const callRate = t.cohorts['Call']?.rate;
+    const noCallRate = t.cohorts['No Call']?.rate;
+    let badge = '';
+    if (callRate !== undefined && noCallRate !== undefined) {
+      const diff = Math.round((callRate - noCallRate) * 10) / 10;
+      badge = `<span class="pp-badge ${diff<0?'neg':''}">${diff>=0?'+':''}${diff}pp</span>`;
+    }
+    const bars = cohorts.map(c => {
+      const cd = t.cohorts[c] || {total:0, renewed:0, rate:0};
+      return `<div class="rate-bar-row">
+        <div class="rate-bar-lbl"><span>${c}</span><span>${cd.rate}%</span></div>
+        <div class="rate-bar-track"><div class="rate-bar-fill" style="width:${cd.rate}%;background:${COHORT_COLORS[c]||'#64748b'}"></div></div>
+        <div class="rate-bar-frac">${cd.renewed}/${cd.total}</div>
+      </div>`;
+    }).join('');
+    return `<div class="type-card">
+      <div class="type-card-head">
+        <span class="type-card-title">${t.type}</span>
+        ${badge}
+      </div>
+      ${bars}
+    </div>`;
   }).join('');
 }
 
-async function callNow(phone, name, expiry, days) {
-  const r = await fetch('/api/call/single', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({name, phone, expiry, days})
-  });
-  const d = await r.json();
-  if (d.success) toast(`✅ Call triggered for ${name}!`);
-  else toast('❌ ' + d.error, false);
-  loadCBs();
-}
-
-// ─── Setup / API Key ──────────────────────────────────────────────────────────
-async function saveApiKey() {
-  const key = document.getElementById('setupApiKey').value.trim();
-  if (!key) { toast('Please enter the API key!', false); return; }
-
-  try {
-    const r = await fetch('/api/set-apikey', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key})
-    });
-    const d = await r.json();
-    if (d.success) {
-      document.getElementById('setupResult').style.display = 'block';
-      document.getElementById('setupStatus').style.background = '#f0fdf4';
-      document.getElementById('setupStatus').style.border = '1px solid #86efac';
-      document.getElementById('setupStatus').style.color = '#166534';
-      document.getElementById('setupStatus').innerHTML = '✅ API Key is set — calls are ready!';
-      document.getElementById('setupBadge').style.display = 'none';
-      toast('✅ API Key saved successfully!');
-    } else {
-      toast('❌ Failed: ' + d.error, false);
-    }
-  } catch(err) { toast('❌ ' + err.message, false); }
-}
-
-async function checkApiKeyStatus() {
-  try {
-    const r = await fetch('/debug?check=1');
-    const d = await r.json();
-    if (d.app_API_KEY_set) {
-      document.getElementById('setupStatus').style.background = '#f0fdf4';
-      document.getElementById('setupStatus').style.border = '1px solid #86efac';
-      document.getElementById('setupStatus').style.color = '#166534';
-      document.getElementById('setupStatus').innerHTML = '✅ API Key is set — calls are ready!';
-      document.getElementById('setupBadge').style.display = 'none';
-    }
-  } catch(e) {}
-}
-
-// ─── Sync from Bolna ─────────────────────────────────────────────────────────
-async function syncBolna() {
-  const btn = document.getElementById('syncBtn');
-  btn.disabled = true; btn.textContent = '⏳ Syncing...';
-  try {
-    const r = await fetch('/api/sync-bolna', {method:'POST'});
-    const d = await r.json();
-    if (d.success) {
-      toast(`✅ Synced ${d.synced} new calls! Total: ${d.total}`);
-      loadLog();
-    } else {
-      toast('❌ Sync failed: ' + d.error, false);
-    }
-  } catch(err) { toast('❌ ' + err.message, false); }
-  btn.disabled = false; btn.textContent = '⚡ Sync from Bolna';
-}
-
-// ─── Auto refresh ─────────────────────────────────────────────────────────────
-setInterval(refreshStats, 30000);
-refreshStats();
-checkApiKeyStatus();
+loadReport();  // default period = till21
 </script>
 </body>
 </html>
@@ -1332,6 +828,228 @@ def batch_call():
 @app.route("/api/log")
 def get_log():
     return jsonify(call_log)
+
+
+# ─── Cohort Renewal Dashboard (backed by Google Sheet) ────────────────────────
+def _normalize_cohort(raw):
+    c = (raw or "").strip().lower()
+    if c == "ai call":
+        return "AI Call"
+    if c == "call":
+        return "Call"
+    if c == "no call":
+        return "No Call"
+    return raw.strip() if raw else "Unknown"
+
+
+def _parse_cohort_date(d):
+    for fmt in ("%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(d, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_cohort_rows():
+    url = f"https://docs.google.com/spreadsheets/d/{COHORT_SHEET_ID}/export?format=csv&gid={COHORT_SHEET_GID}"
+    resp = req.get(url, timeout=30)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+    return list(csv.DictReader(io.StringIO(resp.text)))
+
+
+def _parse_price(raw):
+    raw = (raw or "").strip()
+    try:
+        val = float(raw)
+        return val if val > 0 else None
+    except ValueError:
+        return None
+
+
+def _bucket_stat(bucket_map, key, renewed):
+    b = bucket_map.setdefault(key, {"total": 0, "renewed": 0})
+    b["total"] += 1
+    if renewed:
+        b["renewed"] += 1
+
+
+def _rate(stat):
+    return round(stat["renewed"] / stat["total"] * 100, 1) if stat["total"] else 0
+
+
+CUSTOMER_TYPES = ["Migrated", "Legacy", "Pay G"]
+
+
+def _customer_type(raw):
+    t = (raw or "").strip()
+    return t if t in CUSTOMER_TYPES else None
+
+
+PRICE_BRACKETS = ["₹45 & below", "₹46-300", "₹301-600", "₹601-1500", "₹1500+"]
+
+
+def _price_bracket(price):
+    if price <= 45:
+        return "₹45 & below"
+    if price <= 300:
+        return "₹46-300"
+    if price <= 600:
+        return "₹301-600"
+    if price <= 1500:
+        return "₹601-1500"
+    return "₹1500+"
+
+
+def _build_cohort_dashboard_data(period="all"):
+    rows = _fetch_cohort_rows()
+    cohorts_seen = []
+    date_agg = {}       # date -> cohort -> {total, renewed}
+    overall = {"total": 0, "renewed": 0}
+    cohort_totals = {}  # cohort -> {total, renewed}
+    matched_rows = 0
+    bracket_cohort_renewed = {}       # bracket -> cohort -> renewed count
+    type_bracket_cohort_renewed = {}  # type -> bracket -> cohort -> renewed count
+    type_cohort_totals = {}           # type -> cohort -> {total, renewed}
+
+    for r in rows:
+        date_raw = (r.get("PLAN_EXPIRED_ON") or "").strip()
+        dt = _parse_cohort_date(date_raw)
+
+        if period == "till21" and (not dt or dt.day > 21):
+            continue
+        if period == "after21" and (not dt or dt.day <= 21):
+            continue
+
+        matched_rows += 1
+        cohort = _normalize_cohort(r.get("Cohort"))
+        if cohort not in cohorts_seen:
+            cohorts_seen.append(cohort)
+        renewed = (r.get("Renewal Status") or "").strip().lower() == "yes"
+
+        overall["total"] += 1
+        if renewed:
+            overall["renewed"] += 1
+        _bucket_stat(cohort_totals, cohort, renewed)
+
+        if dt:
+            bucket = date_agg.setdefault(dt, {}).setdefault(cohort, {"total": 0, "renewed": 0})
+            bucket["total"] += 1
+            if renewed:
+                bucket["renewed"] += 1
+
+        price = _parse_price(r.get("Plan Amount"))
+        if price is not None and renewed:
+            bracket = _price_bracket(price)
+            bc = bracket_cohort_renewed.setdefault(bracket, {})
+            bc[cohort] = bc.get(cohort, 0) + 1
+
+        ctype = _customer_type(r.get("A"))
+        if ctype:
+            tstat = type_cohort_totals.setdefault(ctype, {}).setdefault(cohort, {"total": 0, "renewed": 0})
+            tstat["total"] += 1
+            if renewed:
+                tstat["renewed"] += 1
+            if price is not None and renewed:
+                bracket = _price_bracket(price)
+                tbc = type_bracket_cohort_renewed.setdefault(ctype, {}).setdefault(bracket, {})
+                tbc[cohort] = tbc.get(cohort, 0) + 1
+
+    dates_sorted = sorted(date_agg.keys())
+    preferred_order = ["Call", "AI Call", "No Call"]
+    cohorts = [c for c in preferred_order if c in cohorts_seen] + \
+              [c for c in cohorts_seen if c not in preferred_order]
+
+    series = {}
+    for c in cohorts:
+        pts = []
+        for dt in dates_sorted:
+            stat = date_agg[dt].get(c, {"total": 0, "renewed": 0})
+            pts.append({"total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat)})
+        series[c] = pts
+
+    # Plan opted by renewed customers — bracket x cohort, renewed only
+    present_brackets = [b for b in PRICE_BRACKETS if b in bracket_cohort_renewed]
+    cohort_renewed_totals = {c: sum(bracket_cohort_renewed[b].get(c, 0) for b in present_brackets) for c in cohorts}
+    grand_renewed_total = sum(cohort_renewed_totals.values())
+
+    plan_breakdown = []
+    for b in present_brackets:
+        row_total = sum(bracket_cohort_renewed[b].get(c, 0) for c in cohorts)
+        by_cohort = {}
+        for c in cohorts:
+            cnt = bracket_cohort_renewed[b].get(c, 0)
+            pct = round(cnt / cohort_renewed_totals[c] * 100, 1) if cohort_renewed_totals[c] else 0
+            by_cohort[c] = {"count": cnt, "pct": pct}
+        plan_breakdown.append({
+            "bracket": b, "total": row_total, "by_cohort": by_cohort,
+            "pct_of_total": round(row_total / grand_renewed_total * 100, 1) if grand_renewed_total else 0,
+        })
+
+    # Customer type (Migrated / Legacy / Pay G) x bracket, renewed only
+    type_breakdown = []
+    for t in CUSTOMER_TYPES:
+        if t not in type_bracket_cohort_renewed:
+            continue
+        brackets_for_type = [b for b in PRICE_BRACKETS if b in type_bracket_cohort_renewed[t]]
+        rows = []
+        total_renewed = 0
+        for b in brackets_for_type:
+            cohort_counts = type_bracket_cohort_renewed[t][b]
+            row_total = sum(cohort_counts.values())
+            total_renewed += row_total
+            rows.append({"bracket": b, "total": row_total, "by_cohort": {c: cohort_counts.get(c, 0) for c in cohorts}})
+        type_breakdown.append({"type": t, "total_renewed": total_renewed, "brackets": rows})
+
+    # Customer type x cohort renewal rate (all customers of that type, not just renewed)
+    type_cohort_rate = []
+    for t in CUSTOMER_TYPES:
+        if t not in type_cohort_totals:
+            continue
+        entry_cohorts = {}
+        for c in cohorts:
+            stat = type_cohort_totals[t].get(c, {"total": 0, "renewed": 0})
+            entry_cohorts[c] = {"total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat)}
+        type_cohort_rate.append({"type": t, "cohorts": entry_cohorts})
+
+    return {
+        "dates": [dt.strftime("%d %b") for dt in dates_sorted],
+        "cohorts": cohorts,
+        "series": series,
+        "row_count": matched_rows,
+        "summary": {
+            "total": overall["total"],
+            "renewed": overall["renewed"],
+            "rate": _rate(overall),
+            "by_cohort": {c: {"total": cohort_totals[c]["total"], "renewed": cohort_totals[c]["renewed"],
+                               "rate": _rate(cohort_totals[c])} for c in cohorts},
+        },
+        "plan_breakdown": plan_breakdown,
+        "type_breakdown": type_breakdown,
+        "type_cohort_rate": type_cohort_rate,
+    }
+
+
+@app.route("/api/cohort-data")
+def api_cohort_data():
+    import time
+    period = request.args.get("period", "all")
+    if period not in ("all", "till21", "after21"):
+        period = "all"
+    force = request.args.get("refresh") == "1"
+    now = time.time()
+    cached = _cohort_cache.get(period)
+    if not force and cached is not None and (now - cached["ts"] < COHORT_CACHE_TTL):
+        return jsonify(cached["data"])
+    try:
+        data = _build_cohort_dashboard_data(period)
+    except Exception as e:
+        if cached is not None:
+            return jsonify(cached["data"])
+        return jsonify({"error": f"Could not fetch cohort sheet: {e}"}), 502
+    _cohort_cache[period] = {"data": data, "ts": now}
+    return jsonify(data)
 
 
 @app.route("/api/update-disposition", methods=["POST"])
