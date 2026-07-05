@@ -219,7 +219,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b;
 .content { padding: 24px; max-width: 1200px; margin: 0 auto; }
 
 /* Summary cards */
-.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .stat-card {
   background: #fff; border-radius: 10px; padding: 14px 16px;
   box-shadow: 0 1px 4px rgba(0,0,0,.07); text-align: center;
@@ -339,7 +339,7 @@ tbody tr:hover td { background: #f8faff; }
         </div>
         <div class="tbl-wrap" style="margin-top:16px">
           <table>
-            <thead><tr><th>Date</th><th>Cohort</th><th>Total</th><th>Renewed</th><th>Renewal %</th></tr></thead>
+            <thead id="dateTblHead"></thead>
             <tbody id="dateTblBody"></tbody>
           </table>
         </div>
@@ -423,8 +423,11 @@ function renderSummary(s) {
   document.getElementById('sumTotal').textContent = s.total;
   document.getElementById('sumRate').textContent = s.rate + '%';
   document.getElementById('sumCall').textContent   = (s.by_cohort['Call']    ?.rate ?? 0) + '%';
-  document.getElementById('sumAi').textContent     = (s.by_cohort['AI Call']?.rate ?? 0) + '%';
   document.getElementById('sumNoCall').textContent = (s.by_cohort['No Call']?.rate ?? 0) + '%';
+
+  const hasAi = !!s.by_cohort['AI Call'];
+  document.getElementById('sumAiCard').style.display = hasAi ? '' : 'none';
+  if (hasAi) document.getElementById('sumAi').textContent = s.by_cohort['AI Call'].rate + '%';
 }
 
 function renderDateChart(data) {
@@ -457,15 +460,15 @@ function renderDateChart(data) {
 }
 
 function renderDateTable(data) {
+  document.getElementById('dateTblHead').innerHTML =
+    '<tr><th>Date</th>' + data.cohorts.map(c => `<th>${c}</th>`).join('') + '</tr>';
+
   const body = document.getElementById('dateTblBody');
-  let html = '';
-  data.dates.forEach((date, i) => {
-    data.cohorts.forEach(c => {
-      const p = data.series[c][i];
-      html += `<tr><td>${date}</td><td>${c}</td><td>${p.total}</td><td>${p.renewed}</td><td>${p.rate}%</td></tr>`;
-    });
-  });
-  body.innerHTML = html || '<tr><td colspan="5"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>';
+  const html = data.dates.map((date, i) => {
+    const cells = data.cohorts.map(c => `<td>${data.series[c][i].rate}%</td>`).join('');
+    return `<tr><td>${date}</td>${cells}</tr>`;
+  }).join('');
+  body.innerHTML = html || `<tr><td colspan="${data.cohorts.length+1}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
 }
 
 // ─── Plan Opted by Renewed Customers ─────────────────────────────────────────
