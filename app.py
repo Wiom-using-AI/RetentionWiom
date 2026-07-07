@@ -958,12 +958,12 @@ def _build_cohort_dashboard_data(period="all"):
         if latest_dt is not None and dt == latest_dt:
             continue
 
-        cohort = _normalize_cohort(r.get("Cohort"))
-
-        # AI Call's first day (22 Jun) was a small pilot batch — exclude it so it
-        # doesn't skew the AI Call comparison against the much larger later days.
-        if cohort == "AI Call" and dt and dt.month == 6 and dt.day == 22:
+        # 22 Jun was AI Call's small pilot-batch launch day — exclude it entirely
+        # (all cohorts) so it doesn't skew the day-wise comparison.
+        if dt and dt.month == 6 and dt.day == 22:
             continue
+
+        cohort = _normalize_cohort(r.get("Cohort"))
 
         matched_rows += 1
         if cohort not in cohorts_seen:
