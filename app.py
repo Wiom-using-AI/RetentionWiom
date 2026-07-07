@@ -226,6 +226,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b;
 }
 .stat-card .num { font-size: 26px; font-weight: 800; color: #1e3a8a; }
 .stat-card .lbl { font-size: 11px; color: #64748b; margin-top: 2px; }
+.stat-card .sub { font-size: 10px; color: #94a3b8; margin-top: 2px; }
 .stat-card.green .num { color: #059669; }
 .stat-card.orange .num { color: #d97706; }
 .stat-card.purple .num { color: #7c3aed; }
@@ -319,10 +320,10 @@ tbody tr:hover td { background: #f8faff; }
     <!-- Summary -->
     <div class="stats">
       <div class="stat-card"><div class="num" id="sumTotal">0</div><div class="lbl">Total Customers</div></div>
-      <div class="stat-card green"><div class="num" id="sumRate">0%</div><div class="lbl">Overall Renewal Rate</div></div>
-      <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div></div>
-      <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div></div>
-      <div class="stat-card orange" id="sumNoCallCard"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div></div>
+      <div class="stat-card green"><div class="num" id="sumRate">0%</div><div class="lbl">Overall Renewal Rate</div><div class="sub" id="sumRateFrac"></div></div>
+      <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div><div class="sub" id="sumCallFrac"></div></div>
+      <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div><div class="sub" id="sumAiFrac"></div></div>
+      <div class="stat-card orange" id="sumNoCallCard"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div><div class="sub" id="sumNoCallFrac"></div></div>
     </div>
 
     <div id="reportEmpty" class="empty-state" style="display:none">
@@ -422,12 +423,22 @@ async function loadReport(forceRefresh=false) {
 function renderSummary(s) {
   document.getElementById('sumTotal').textContent = s.total;
   document.getElementById('sumRate').textContent = s.rate + '%';
-  document.getElementById('sumCall').textContent   = (s.by_cohort['Call']    ?.rate ?? 0) + '%';
-  document.getElementById('sumNoCall').textContent = (s.by_cohort['No Call']?.rate ?? 0) + '%';
+  document.getElementById('sumRateFrac').textContent = `${s.renewed}/${s.total}`;
+
+  const call = s.by_cohort['Call'] ?? {rate:0, renewed:0, total:0};
+  document.getElementById('sumCall').textContent = call.rate + '%';
+  document.getElementById('sumCallFrac').textContent = `${call.renewed}/${call.total}`;
+
+  const noCall = s.by_cohort['No Call'] ?? {rate:0, renewed:0, total:0};
+  document.getElementById('sumNoCall').textContent = noCall.rate + '%';
+  document.getElementById('sumNoCallFrac').textContent = `${noCall.renewed}/${noCall.total}`;
 
   const hasAi = !!s.by_cohort['AI Call'];
   document.getElementById('sumAiCard').style.display = hasAi ? '' : 'none';
-  if (hasAi) document.getElementById('sumAi').textContent = s.by_cohort['AI Call'].rate + '%';
+  if (hasAi) {
+    document.getElementById('sumAi').textContent = s.by_cohort['AI Call'].rate + '%';
+    document.getElementById('sumAiFrac').textContent = `${s.by_cohort['AI Call'].renewed}/${s.by_cohort['AI Call'].total}`;
+  }
 }
 
 function renderDateChart(data) {
@@ -465,7 +476,10 @@ function renderDateTable(data) {
 
   const body = document.getElementById('dateTblBody');
   const html = data.dates.map((date, i) => {
-    const cells = data.cohorts.map(c => `<td>${data.series[c][i].rate}%</td>`).join('');
+    const cells = data.cohorts.map(c => {
+      const p = data.series[c][i];
+      return `<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`;
+    }).join('');
     return `<tr><td>${date}</td>${cells}</tr>`;
   }).join('');
   body.innerHTML = html || `<tr><td colspan="${data.cohorts.length+1}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
@@ -905,6 +919,14 @@ def _price_bracket(price):
     return "₹1500+"
 
 
+def _in_period(dt, period):
+    if period == "till21":
+        return bool(dt) and dt.day <= 21
+    if period == "after21":
+        return bool(dt) and dt.day > 21
+    return True
+
+
 def _build_cohort_dashboard_data(period="all"):
     rows = _fetch_cohort_rows()
     cohorts_seen = []
@@ -916,17 +938,34 @@ def _build_cohort_dashboard_data(period="all"):
     type_bracket_cohort_renewed = {}  # type -> bracket -> cohort -> renewed count
     type_cohort_totals = {}           # type -> cohort -> {total, renewed}
 
+    # Exclude the single most recent cohort day across the whole sheet — plans that
+    # only just expired haven't had time to renew yet, so that day's rate is
+    # artificially low/incomplete. This is a global cutoff, not per-period, so it
+    # doesn't accidentally drop a legitimate, mature day that just happens to sit
+    # at the edge of a tab's date range (e.g. the 21st on the Till 21 tab).
+    latest_dt = None
+    for r in rows:
+        dt = _parse_cohort_date((r.get("PLAN_EXPIRED_ON") or "").strip())
+        if dt and (latest_dt is None or dt > latest_dt):
+            latest_dt = dt
+
     for r in rows:
         date_raw = (r.get("PLAN_EXPIRED_ON") or "").strip()
         dt = _parse_cohort_date(date_raw)
 
-        if period == "till21" and (not dt or dt.day > 21):
+        if not _in_period(dt, period):
             continue
-        if period == "after21" and (not dt or dt.day <= 21):
+        if latest_dt is not None and dt == latest_dt:
+            continue
+
+        cohort = _normalize_cohort(r.get("Cohort"))
+
+        # AI Call's first day (22 Jun) was a small pilot batch — exclude it so it
+        # doesn't skew the AI Call comparison against the much larger later days.
+        if cohort == "AI Call" and dt and dt.month == 6 and dt.day == 22:
             continue
 
         matched_rows += 1
-        cohort = _normalize_cohort(r.get("Cohort"))
         if cohort not in cohorts_seen:
             cohorts_seen.append(cohort)
         renewed = (r.get("Renewal Status") or "").strip().lower() == "yes"
