@@ -938,24 +938,11 @@ def _build_cohort_dashboard_data(period="all"):
     type_bracket_cohort_renewed = {}  # type -> bracket -> cohort -> renewed count
     type_cohort_totals = {}           # type -> cohort -> {total, renewed}
 
-    # Exclude the single most recent cohort day across the whole sheet — plans that
-    # only just expired haven't had time to renew yet, so that day's rate is
-    # artificially low/incomplete. This is a global cutoff, not per-period, so it
-    # doesn't accidentally drop a legitimate, mature day that just happens to sit
-    # at the edge of a tab's date range (e.g. the 21st on the Till 21 tab).
-    latest_dt = None
-    for r in rows:
-        dt = _parse_cohort_date((r.get("PLAN_EXPIRED_ON") or "").strip())
-        if dt and (latest_dt is None or dt > latest_dt):
-            latest_dt = dt
-
     for r in rows:
         date_raw = (r.get("PLAN_EXPIRED_ON") or "").strip()
         dt = _parse_cohort_date(date_raw)
 
         if not _in_period(dt, period):
-            continue
-        if latest_dt is not None and dt == latest_dt:
             continue
 
         # 22 Jun was AI Call's small pilot-batch launch day — exclude it entirely
