@@ -323,7 +323,6 @@ tbody tr:hover td { background: #f8faff; }
       <div class="stat-card green"><div class="num" id="sumRate">0%</div><div class="lbl">Overall Renewal Rate</div><div class="sub" id="sumRateFrac"></div></div>
       <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div><div class="sub" id="sumCallFrac"></div></div>
       <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div><div class="sub" id="sumAiFrac"></div></div>
-      <div class="stat-card orange" id="sumNoCallCard"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div><div class="sub" id="sumNoCallFrac"></div></div>
     </div>
 
     <div id="reportEmpty" class="empty-state" style="display:none">
@@ -454,10 +453,6 @@ function renderSummary(s) {
   const call = s.by_cohort['Call'] ?? {rate:0, renewed:0, total:0};
   document.getElementById('sumCall').textContent = call.rate + '%';
   document.getElementById('sumCallFrac').textContent = `${call.renewed}/${call.total}`;
-
-  const noCall = s.by_cohort['No Call'] ?? {rate:0, renewed:0, total:0};
-  document.getElementById('sumNoCall').textContent = noCall.rate + '%';
-  document.getElementById('sumNoCallFrac').textContent = `${noCall.renewed}/${noCall.total}`;
 
   const hasAi = !!s.by_cohort['AI Call'];
   document.getElementById('sumAiCard').style.display = hasAi ? '' : 'none';
