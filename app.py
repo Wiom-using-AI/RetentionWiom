@@ -1016,11 +1016,6 @@ def _rate(stat):
     return round(stat["renewed"] / stat["total"] * 100, 1) if stat["total"] else 0
 
 
-# Column names in Google Sheet for renewal-day calculation
-# Call date = PLAN_EXPIRED_ON (calls happen on expiry day)
-# Renewal date = try these column names in order
-RENEWAL_DATE_COLS = ["RENEWAL_DATE", "RECHARGE_DATE", "RECHARGED_ON", "Renewal Date", "Recharge Date"]
-
 CUSTOMER_TYPES = ["Migrated", "Legacy", "Pay G"]
 
 
@@ -1187,23 +1182,16 @@ def _build_cohort_dashboard_data(period="all"):
 
 def _build_renewal_day_data(period="after21"):
     """
-    For each renewed customer, compute how many days after call they renewed.
-    call_date = PLAN_EXPIRED_ON, renewal_date = first matching RENEWAL_DATE_COLS column.
+    Reads the 'Renewal day' column directly from the sheet (values: 0, 1, 2, 3...).
     Returns distribution: day -> {count, pct_of_called, pct_of_renewed} per cohort.
     """
     rows = _fetch_cohort_rows()
 
-    # detect which renewal-date column exists
-    renewal_col = None
-    if rows:
-        for col in RENEWAL_DATE_COLS:
-            if col in rows[0]:
-                renewal_col = col
-                break
+    RENEWAL_DAY_COL = "Renewal day"
+    has_renewal_day = bool(rows) and RENEWAL_DAY_COL in rows[0]
 
-    # cohort -> day -> count of renewals
-    day_dist = {}     # cohort -> {day: count}
-    total_called = {} # cohort -> total customers in this period
+    day_dist = {}     # cohort -> {day_key: count}
+    total_called = {} # cohort -> total customers
     total_renewed = {}
 
     for r in rows:
@@ -1223,19 +1211,18 @@ def _build_renewal_day_data(period="after21"):
         if renewed:
             total_renewed[cohort] += 1
 
-        if not renewed or not renewal_col or not dt:
+        if not renewed or not has_renewal_day:
             continue
 
-        renewal_raw = (r.get(renewal_col) or "").strip()
-        renewal_dt = _parse_cohort_date(renewal_raw)
-        if not renewal_dt:
+        day_raw = (r.get(RENEWAL_DAY_COL) or "").strip()
+        if not day_raw:
+            continue
+        try:
+            day_val = int(float(day_raw))
+        except (ValueError, TypeError):
             continue
 
-        days_after = (renewal_dt - dt).days
-        if days_after < 0:
-            days_after = 0
-        day_key = days_after if days_after <= 7 else "8+"
-
+        day_key = day_val if day_val <= 7 else "8+"
         day_dist.setdefault(cohort, {})
         day_dist[cohort][day_key] = day_dist[cohort].get(day_key, 0) + 1
 
@@ -1266,13 +1253,12 @@ def _build_renewal_day_data(period="after21"):
             }
         }
 
-    has_renewal_date = renewal_col is not None
     return {
         "cohorts": cohorts,
         "days": [str(d) for d in all_days],
         "by_cohort": result_by_cohort,
-        "has_renewal_date": has_renewal_date,
-        "renewal_col_used": renewal_col,
+        "has_renewal_date": has_renewal_day,
+        "renewal_col_used": RENEWAL_DAY_COL if has_renewal_day else None,
     }
 
 
