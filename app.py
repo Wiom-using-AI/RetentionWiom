@@ -371,6 +371,31 @@ tbody tr:hover td { background: #f8faff; }
         <div id="typeRateGrid" class="type-grid"></div>
       </div>
 
+      <!-- ══════ RENEWAL DAY DISTRIBUTION ══════ -->
+      <div class="card">
+        <div class="card-title">📆 Renewal Day — When Customers Recharge After AI Call</div>
+        <div id="renewalDayNoDate" style="display:none;background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;font-size:12px;color:#92400e;margin-bottom:16px">
+          ⚠️ <b>RENEWAL_DATE column not found in Google Sheet.</b> Add a <code>RENEWAL_DATE</code> column (date when customer recharged) to show this chart.
+        </div>
+        <div id="renewalDayHint" style="font-size:12px;color:#64748b;margin:-10px 0 16px">
+          % of customers (out of total called) who recharged on each day after the AI call. Switch between "% of called" and "% of renewed".
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
+          <span style="font-size:12px;color:#475569;font-weight:600">Show as:</span>
+          <button class="btn btn-sm" id="rdBtnCalled" onclick="switchRdMode('called')" style="background:#1e3a8a;color:#fff">% of Called</button>
+          <button class="btn btn-sm btn-outline" id="rdBtnRenewed" onclick="switchRdMode('renewed')">% of Renewed</button>
+        </div>
+        <div style="position:relative;height:300px">
+          <canvas id="renewalDayChart"></canvas>
+        </div>
+        <div class="tbl-wrap" style="margin-top:16px">
+          <table>
+            <thead id="rdTblHead"></thead>
+            <tbody id="rdTblBody"></tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
   </div><!-- /content -->
@@ -413,6 +438,7 @@ async function loadReport(forceRefresh=false) {
     renderPlanTable(data.cohorts, data.plan_breakdown);
     renderTypeBreakdown(data.cohorts, data.type_breakdown);
     renderTypeRate(data.cohorts, data.type_cohort_rate);
+    loadRenewalDay(forceRefresh);
   } catch (e) {
     document.getElementById('reportBody').style.display = 'none';
     document.getElementById('reportEmpty').style.display = 'block';
@@ -576,6 +602,100 @@ function renderTypeRate(cohorts, types) {
       ${bars}
     </div>`;
   }).join('');
+}
+
+// ─── Renewal Day Distribution ────────────────────────────────────────────────
+let renewalDayChartObj = null;
+let rdMode = 'called';   // 'called' | 'renewed'
+let _rdData = null;
+
+function switchRdMode(mode) {
+  rdMode = mode;
+  document.getElementById('rdBtnCalled').style.cssText  = mode==='called'  ? 'background:#1e3a8a;color:#fff' : '';
+  document.getElementById('rdBtnRenewed').style.cssText = mode==='renewed' ? 'background:#1e3a8a;color:#fff' : '';
+  document.getElementById('rdBtnCalled').className  = mode==='called'  ? 'btn btn-sm' : 'btn btn-sm btn-outline';
+  document.getElementById('rdBtnRenewed').className = mode==='renewed' ? 'btn btn-sm' : 'btn btn-sm btn-outline';
+  if (_rdData) renderRenewalDay(_rdData);
+}
+
+async function loadRenewalDay(forceRefresh=false) {
+  const params = new URLSearchParams({ period: currentPeriod });
+  if (forceRefresh) params.set('refresh', '1');
+  try {
+    const res = await fetch('/api/renewal-day-data?' + params.toString());
+    _rdData = await res.json();
+    if (_rdData.error) throw new Error(_rdData.error);
+    document.getElementById('renewalDayNoDate').style.display = _rdData.has_renewal_date ? 'none' : '';
+    renderRenewalDay(_rdData);
+  } catch(e) {
+    console.error('Renewal day fetch error', e);
+  }
+}
+
+function renderRenewalDay(data) {
+  const pctKey = rdMode === 'called' ? 'pct_of_called' : 'pct_of_renewed';
+  const label  = rdMode === 'called' ? '% of Called' : '% of Renewed';
+  const dayLabels = data.days.map(d => d === '8+' ? 'Day 8+' : 'Day ' + d);
+
+  const datasets = data.cohorts.map(c => ({
+    label: c,
+    data: data.days.map(d => (data.by_cohort[c]?.days[d]?.[pctKey] ?? 0)),
+    backgroundColor: (COHORT_COLORS[c] || '#64748b') + 'cc',
+    borderColor: COHORT_COLORS[c] || '#64748b',
+    borderWidth: 2,
+    borderRadius: 4,
+  }));
+
+  const ctx = document.getElementById('renewalDayChart').getContext('2d');
+  if (renewalDayChartObj) renewalDayChartObj.destroy();
+  renewalDayChartObj = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: dayLabels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: { callbacks: {
+          afterLabel: (item) => {
+            const d = data.days[item.dataIndex];
+            const cd = data.by_cohort[item.dataset.label];
+            const cnt = cd?.days[d]?.count ?? 0;
+            return `${cnt} customers`;
+          }
+        }}
+      },
+      scales: {
+        y: { beginAtZero: true, max: 100,
+             title: { display: true, text: label + ' (%)' } },
+        x: { title: { display: true, text: 'Days after AI Call' } }
+      }
+    }
+  });
+
+  // Table
+  document.getElementById('rdTblHead').innerHTML =
+    '<tr><th>Renewal Day</th>' + data.cohorts.map(c =>
+      `<th>${c} (${label})</th>`).join('') + '<th>Total Renewals (all cohorts)</th></tr>';
+
+  const body = document.getElementById('rdTblBody');
+  body.innerHTML = data.days.map((d, i) => {
+    const dayLbl = d === '8+' ? 'Day 8+' : 'Day ' + d;
+    let grandTotal = 0;
+    const cells = data.cohorts.map(c => {
+      const entry = data.by_cohort[c]?.days[d] || {count:0, pct_of_called:0, pct_of_renewed:0};
+      grandTotal += entry.count;
+      const pct = entry[pctKey];
+      const color = COHORT_COLORS[c] || '#1e3a8a';
+      return `<td><b style="color:${color}">${pct}%</b> <span style="color:#94a3b8;font-size:11px">(${entry.count})</span></td>`;
+    }).join('');
+    return `<tr><td><b>${dayLbl}</b></td>${cells}<td>${grandTotal}</td></tr>`;
+  }).join('');
+
+  // Summary row
+  const summaryRow = '<tr style="background:#f8faff;font-weight:700"><td>Total Called</td>' +
+    data.cohorts.map(c => `<td>${data.by_cohort[c]?.total_called ?? 0} called / ${data.by_cohort[c]?.total_renewed ?? 0} renewed</td>`).join('') +
+    '<td></td></tr>';
+  document.getElementById('rdTblBody').innerHTML += summaryRow;
 }
 
 loadReport();  // default period = till21
@@ -896,6 +1016,11 @@ def _rate(stat):
     return round(stat["renewed"] / stat["total"] * 100, 1) if stat["total"] else 0
 
 
+# Column names in Google Sheet for renewal-day calculation
+# Call date = PLAN_EXPIRED_ON (calls happen on expiry day)
+# Renewal date = try these column names in order
+RENEWAL_DATE_COLS = ["RENEWAL_DATE", "RECHARGE_DATE", "RECHARGED_ON", "Renewal Date", "Recharge Date"]
+
 CUSTOMER_TYPES = ["Migrated", "Legacy", "Pay G"]
 
 
@@ -1058,6 +1183,119 @@ def _build_cohort_dashboard_data(period="all"):
         "type_breakdown": type_breakdown,
         "type_cohort_rate": type_cohort_rate,
     }
+
+
+def _build_renewal_day_data(period="after21"):
+    """
+    For each renewed customer, compute how many days after call they renewed.
+    call_date = PLAN_EXPIRED_ON, renewal_date = first matching RENEWAL_DATE_COLS column.
+    Returns distribution: day -> {count, pct_of_called, pct_of_renewed} per cohort.
+    """
+    rows = _fetch_cohort_rows()
+
+    # detect which renewal-date column exists
+    renewal_col = None
+    if rows:
+        for col in RENEWAL_DATE_COLS:
+            if col in rows[0]:
+                renewal_col = col
+                break
+
+    # cohort -> day -> count of renewals
+    day_dist = {}     # cohort -> {day: count}
+    total_called = {} # cohort -> total customers in this period
+    total_renewed = {}
+
+    for r in rows:
+        date_raw = (r.get("PLAN_EXPIRED_ON") or "").strip()
+        dt = _parse_cohort_date(date_raw)
+        if not _in_period(dt, period):
+            continue
+        if dt and dt.month == 6 and dt.day == 22:
+            continue
+
+        cohort = _normalize_cohort(r.get("Cohort"))
+        renewed = (r.get("Renewal Status") or "").strip().lower() == "yes"
+
+        total_called.setdefault(cohort, 0)
+        total_called[cohort] += 1
+        total_renewed.setdefault(cohort, 0)
+        if renewed:
+            total_renewed[cohort] += 1
+
+        if not renewed or not renewal_col or not dt:
+            continue
+
+        renewal_raw = (r.get(renewal_col) or "").strip()
+        renewal_dt = _parse_cohort_date(renewal_raw)
+        if not renewal_dt:
+            continue
+
+        days_after = (renewal_dt - dt).days
+        if days_after < 0:
+            days_after = 0
+        day_key = days_after if days_after <= 7 else "8+"
+
+        day_dist.setdefault(cohort, {})
+        day_dist[cohort][day_key] = day_dist[cohort].get(day_key, 0) + 1
+
+    preferred_order = ["Call", "AI Call", "No Call"]
+    cohorts = [c for c in preferred_order if c in total_called] + \
+              [c for c in total_called if c not in preferred_order]
+
+    all_days = sorted(
+        {d for cd in day_dist.values() for d in cd},
+        key=lambda x: (1, 8) if x == "8+" else (0, int(x))
+    )
+
+    result_by_cohort = {}
+    for c in cohorts:
+        dist = day_dist.get(c, {})
+        tc = total_called.get(c, 0)
+        tr = total_renewed.get(c, 0)
+        result_by_cohort[c] = {
+            "total_called": tc,
+            "total_renewed": tr,
+            "days": {
+                str(d): {
+                    "count": dist.get(d, 0),
+                    "pct_of_called": round(dist.get(d, 0) / tc * 100, 1) if tc else 0,
+                    "pct_of_renewed": round(dist.get(d, 0) / tr * 100, 1) if tr else 0,
+                }
+                for d in all_days
+            }
+        }
+
+    has_renewal_date = renewal_col is not None
+    return {
+        "cohorts": cohorts,
+        "days": [str(d) for d in all_days],
+        "by_cohort": result_by_cohort,
+        "has_renewal_date": has_renewal_date,
+        "renewal_col_used": renewal_col,
+    }
+
+
+@app.route("/api/renewal-day-data")
+def api_renewal_day_data():
+    import time
+    period = request.args.get("period", "after21")
+    if period not in ("all", "till21", "after21"):
+        period = "after21"
+    force = request.args.get("refresh") == "1"
+    cache_key = "renewal_day_" + period
+    now = time.time()
+    cached = _cohort_cache.get(cache_key)
+    if not force and cached and (now - cached["ts"] < COHORT_CACHE_TTL):
+        return jsonify(cached["data"])
+    try:
+        data = _build_renewal_day_data(period)
+    except Exception as e:
+        if cached:
+            return jsonify(cached["data"])
+        return jsonify({"error": str(e)}), 502
+    _cohort_cache[cache_key] = {"data": data, "ts": now}
+    return jsonify(data)
 
 
 @app.route("/api/cohort-data")
