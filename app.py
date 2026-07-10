@@ -323,6 +323,7 @@ tbody tr:hover td { background: #f8faff; }
       <div class="stat-card green"><div class="num" id="sumRate">0%</div><div class="lbl">Overall Renewal Rate</div><div class="sub" id="sumRateFrac"></div></div>
       <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div><div class="sub" id="sumCallFrac"></div></div>
       <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div><div class="sub" id="sumAiFrac"></div></div>
+      <div class="stat-card orange" id="sumNoCallCard" style="display:none"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div><div class="sub" id="sumNoCallFrac"></div></div>
     </div>
 
     <div id="reportEmpty" class="empty-state" style="display:none">
@@ -459,6 +460,15 @@ function renderSummary(s) {
   if (hasAi) {
     document.getElementById('sumAi').textContent = s.by_cohort['AI Call'].rate + '%';
     document.getElementById('sumAiFrac').textContent = `${s.by_cohort['AI Call'].renewed}/${s.by_cohort['AI Call'].total}`;
+  }
+
+  // No Call tile: only on till21 tab
+  const noCallData = s.by_cohort['No Call'];
+  const showNoCall = currentPeriod === 'till21' && !!noCallData;
+  document.getElementById('sumNoCallCard').style.display = showNoCall ? '' : 'none';
+  if (showNoCall) {
+    document.getElementById('sumNoCall').textContent = noCallData.rate + '%';
+    document.getElementById('sumNoCallFrac').textContent = `${noCallData.renewed}/${noCallData.total}`;
   }
 }
 
@@ -632,7 +642,10 @@ function renderRenewalDay(data) {
   const label  = rdMode === 'called' ? '% of Called' : '% of Renewed';
   const dayLabels = data.days.map(d => d === '8+' ? 'Day 8+' : 'Day ' + d);
 
-  const datasets = data.cohorts.map(c => ({
+  // Exclude No Call from renewal day chart — it's AI call analysis only
+  const cohorts = data.cohorts.filter(c => c !== 'No Call');
+
+  const datasets = cohorts.map(c => ({
     label: c,
     data: data.days.map(d => (data.by_cohort[c]?.days[d]?.[pctKey] ?? 0)),
     backgroundColor: (COHORT_COLORS[c] || '#64748b') + 'cc',
@@ -669,14 +682,14 @@ function renderRenewalDay(data) {
 
   // Table
   document.getElementById('rdTblHead').innerHTML =
-    '<tr><th>Renewal Day</th>' + data.cohorts.map(c =>
-      `<th>${c} (${label})</th>`).join('') + '<th>Total Renewals (all cohorts)</th></tr>';
+    '<tr><th>Renewal Day</th>' + cohorts.map(c =>
+      `<th>${c} (${label})</th>`).join('') + '<th>Total Renewals</th></tr>';
 
   const body = document.getElementById('rdTblBody');
-  body.innerHTML = data.days.map((d, i) => {
+  body.innerHTML = data.days.map((d) => {
     const dayLbl = d === '8+' ? 'Day 8+' : 'Day ' + d;
     let grandTotal = 0;
-    const cells = data.cohorts.map(c => {
+    const cells = cohorts.map(c => {
       const entry = data.by_cohort[c]?.days[d] || {count:0, pct_of_called:0, pct_of_renewed:0};
       grandTotal += entry.count;
       const pct = entry[pctKey];
@@ -688,7 +701,7 @@ function renderRenewalDay(data) {
 
   // Summary row
   const summaryRow = '<tr style="background:#f8faff;font-weight:700"><td>Total Called</td>' +
-    data.cohorts.map(c => `<td>${data.by_cohort[c]?.total_called ?? 0} called / ${data.by_cohort[c]?.total_renewed ?? 0} renewed</td>`).join('') +
+    cohorts.map(c => `<td>${data.by_cohort[c]?.total_called ?? 0} called / ${data.by_cohort[c]?.total_renewed ?? 0} renewed</td>`).join('') +
     '<td></td></tr>';
   document.getElementById('rdTblBody').innerHTML += summaryRow;
 }
