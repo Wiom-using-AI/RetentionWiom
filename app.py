@@ -55,16 +55,18 @@ def format_days_remaining(days_str):
         return str(days_str)
 
 def format_expiry_date(date_str):
-    """Convert 2025-06-13 → 'तेरह June' for natural Hindi TTS reading."""
+    """Convert 2025-06-13 or 02-07-2026 → 'तेरह June' for natural Hindi TTS reading."""
     if not date_str:
         return "recently"
-    try:
-        dt = datetime.strptime(str(date_str).strip(), "%Y-%m-%d")
-        day_hindi = HINDI_DAYS.get(dt.day, str(dt.day))
-        month_name = HINDI_MONTHS.get(dt.month, "")
-        return f"{day_hindi} {month_name}"
-    except Exception:
-        return date_str  # fallback to original if parse fails
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            dt = datetime.strptime(str(date_str).strip(), fmt)
+            day_hindi = HINDI_DAYS.get(dt.day, str(dt.day))
+            month_name = HINDI_MONTHS.get(dt.month, "")
+            return f"{day_hindi} {month_name}"
+        except Exception:
+            continue
+    return date_str
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_SCRIPT_DIR, ".env"))
