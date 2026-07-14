@@ -1047,11 +1047,15 @@ def _price_bracket(price):
     return "₹1500+"
 
 
+_AI_CALL_START = datetime(2026, 6, 22)  # AI calls started after 21st June
+
 def _in_period(dt, period):
+    if not dt:
+        return False
     if period == "till21":
-        return bool(dt) and dt.day <= 21
+        return dt < _AI_CALL_START
     if period == "after21":
-        return bool(dt) and dt.day > 21
+        return dt >= _AI_CALL_START
     return True
 
 
