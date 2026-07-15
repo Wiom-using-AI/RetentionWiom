@@ -5,8 +5,10 @@ Run: python app.py → http://localhost:5000
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import requests as req
-import csv, io, os, json, sys
-from datetime import datetime, timedelta
+import csv, io, os, json, sys, threading
+from datetime import datetime, timedelta, date
+from apscheduler.schedulers.background import BackgroundScheduler
+import pytz
 
 # Windows console default (cp1252) can't encode emoji in our log prints — force UTF-8
 for _stream in (sys.stdout, sys.stderr):
@@ -177,6 +179,51 @@ def save_json(path, data, table=None):
 _init_db()
 call_log     = load_json(LOG_FILE,      table="call_log")
 callback_log = load_json(CALLBACK_FILE, table="callback_log")
+
+# ── Daily automation scheduler ────────────────────────────────────────────────
+from automation import run_daily_campaign, update_call_record, get_today_calls
+
+IST = pytz.timezone("Asia/Kolkata")
+
+def _job_redial():
+    log.info("Scheduler: Redial starting")
+    result = run_daily_campaign(is_redial=True)
+    log.info(f"Scheduler: Redial done — {result}")
+
+def _monitor_and_redial():
+    """Poll every 5 min until 90% of round-1 calls resolved, then auto-redial."""
+    from automation import daily_batches
+    date_str = date.today().strftime("%Y-%m-%d")
+    max_wait = 240 * 60   # 4 hour safety cap
+    waited   = 0
+    interval = 300        # check every 5 minutes
+    while waited < max_wait:
+        time.sleep(interval)
+        waited += interval
+        batch  = daily_batches.get(date_str, {})
+        calls  = batch.get("calls", [])
+        if not calls:
+            continue
+        resolved = sum(1 for c in calls if c.get("status") not in {"queued","error",""})
+        pct = resolved / len(calls) * 100
+        log.info(f"Batch monitor: {resolved}/{len(calls)} resolved ({pct:.0f}%)")
+        if pct >= 90:
+            log.info("90% resolved — triggering redial")
+            _job_redial()
+            return
+    log.info("Max wait reached — triggering redial anyway")
+    _job_redial()
+
+def _job_round1():
+    log.info("Scheduler: Round 1 starting")
+    result = run_daily_campaign()
+    log.info(f"Scheduler: Round 1 done — {result}")
+    threading.Thread(target=_monitor_and_redial, daemon=True).start()
+
+scheduler = BackgroundScheduler(timezone=IST)
+scheduler.add_job(_job_round1, "cron", hour=10, minute=0, id="round1_daily")
+scheduler.start()
+log.info("Scheduler started — daily calls at 10:00 AM IST")
 
 DISPOSITIONS = [
     "Pending",
@@ -732,6 +779,28 @@ def set_apikey():
     _api_key_override = key
     return jsonify({"success": True, "message": "API key set successfully"})
 
+
+@app.route("/api/auto-campaign/trigger", methods=["POST"])
+def manual_trigger():
+    """Manually trigger today's campaign (for testing or emergencies)."""
+    d = request.json or {}
+    target_date = d.get("target_date") or (date.today() - timedelta(days=11)).strftime("%Y-%m-%d")
+    is_redial   = d.get("redial", False)
+    threading.Thread(target=run_daily_campaign, kwargs={"target_date": target_date, "is_redial": is_redial}, daemon=True).start()
+    return jsonify({"success": True, "message": f"Campaign triggered for {target_date}", "redial": is_redial})
+
+@app.route("/api/auto-campaign/today")
+def today_calls():
+    """Return today's auto-call records."""
+    return jsonify(get_today_calls())
+
+@app.route("/api/auto-campaign/status")
+def campaign_status():
+    """Show scheduler status and next run time."""
+    jobs = []
+    for job in scheduler.get_jobs():
+        jobs.append({"id": job.id, "next_run": str(job.next_run_time)})
+    return jsonify({"scheduler": "running", "jobs": jobs, "today_calls": len(get_today_calls())})
 
 @app.route("/debug-calllog")
 def debug_calllog():
@@ -1574,6 +1643,9 @@ def webhook():
         original = new_entry
 
     save_json(LOG_FILE, call_log, table="call_log")
+
+    # ── Update automation tracker + write to Google Sheet ────────────────────
+    update_call_record(exec_id, status, disposition, voc)
 
     # ── Auto-add to callback list ────────────────────────────────────────────
     if cb_needed and original:
