@@ -178,11 +178,14 @@ HINDI_NUMBERS = {
 }
 
 def hindi_date(d):
-    try:
-        dt = datetime.strptime(str(d)[:10], "%Y-%m-%d")
-        return f"{HINDI_DAYS.get(dt.day, str(dt.day))} {HINDI_MONTHS.get(dt.month, '')}"
-    except:
-        return str(d)
+    s = str(d).strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            dt = datetime.strptime(s[:10], fmt)
+            return f"{HINDI_DAYS.get(dt.day, str(dt.day))} {HINDI_MONTHS.get(dt.month, '')}"
+        except:
+            continue
+    return s
 
 def hindi_days(n):
     try:
