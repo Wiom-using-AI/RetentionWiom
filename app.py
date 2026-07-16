@@ -367,7 +367,7 @@ tbody tr:hover td { background: #f8faff; }
     <div class="tabs">
       <div class="tab-item active" onclick="switchPeriod('till21')" id="tab-till21">📆 Till 21st June (No AI Call)</div>
       <div class="tab-item" onclick="switchPeriod('after21')" id="tab-after21">🤖 After 21st June (AI Call)</div>
-      <div class="tab-item" onclick="switchPeriod('july')" id="tab-july">📅 July (AI Call)</div>
+      <div class="tab-item" onclick="switchPeriod('fullaijuly')" id="tab-fullaijuly">🚀 100% AI from 4th July</div>
     </div>
 
     <!-- Summary -->
@@ -469,7 +469,7 @@ let currentPeriod = 'till21';
 
 function switchPeriod(period) {
   currentPeriod = period;
-  ['till21','after21','july'].forEach(p => document.getElementById('tab-'+p).classList.toggle('active', p===period));
+  ['till21','after21','fullaijuly'].forEach(p => document.getElementById('tab-'+p).classList.toggle('active', p===period));
   loadReport();
 }
 
@@ -1122,8 +1122,9 @@ def _price_bracket(price):
     return "₹1500+"
 
 
-_AI_CALL_START = datetime(2026, 6, 22)  # AI calls started after 21st June
-_JULY_START    = datetime(2026, 7,  1)  # July data
+_AI_CALL_START  = datetime(2026, 6, 22)  # AI calls started after 21st June
+_JULY_START     = datetime(2026, 7,  1)  # July starts
+_FULL_AI_START  = datetime(2026, 7,  4)  # 100% AI automation from 4th July
 
 def _in_period(dt, period):
     if not dt:
@@ -1131,9 +1132,9 @@ def _in_period(dt, period):
     if period == "till21":
         return dt < _AI_CALL_START
     if period == "after21":
-        return _AI_CALL_START <= dt < _JULY_START
-    if period == "july":
-        return dt >= _JULY_START
+        return _AI_CALL_START <= dt < _FULL_AI_START
+    if period == "fullaijuly":
+        return dt >= _FULL_AI_START
     return True
 
 
@@ -1356,7 +1357,7 @@ def _build_renewal_day_data(period="after21"):
 def api_renewal_day_data():
     import time
     period = request.args.get("period", "after21")
-    if period not in ("all", "till21", "after21", "july"):
+    if period not in ("all", "till21", "after21", "fullaijuly"):
         period = "after21"
     force = request.args.get("refresh") == "1"
     cache_key = "renewal_day_" + period
@@ -1378,7 +1379,7 @@ def api_renewal_day_data():
 def api_cohort_data():
     import time
     period = request.args.get("period", "all")
-    if period not in ("all", "till21", "after21", "july"):
+    if period not in ("all", "till21", "after21", "fullaijuly"):
         period = "all"
     force = request.args.get("refresh") == "1"
     now = time.time()
