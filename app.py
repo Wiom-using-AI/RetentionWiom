@@ -5,7 +5,10 @@ Run: python app.py → http://localhost:5000
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import requests as req
-import csv, io, os, json, sys, threading
+import csv, io, os, json, sys, threading, logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, date
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
