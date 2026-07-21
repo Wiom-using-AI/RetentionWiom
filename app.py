@@ -527,11 +527,24 @@ function renderSummary(s) {
 
 function renderDateChart(data) {
   const ctx = document.getElementById('dateChart').getContext('2d');
-  const datasets = data.cohorts.map(c => ({
-    label: c,
-    data: data.series[c].map(p => p.rate),
-    backgroundColor: COHORT_COLORS[c] || '#64748b',
-  }));
+  const datasets = [];
+  data.cohorts.forEach(c => {
+    const color = COHORT_COLORS[c] || '#64748b';
+    // Overall renewal rate bar
+    datasets.push({
+      label: c,
+      data: data.series[c].map(p => p.rate),
+      backgroundColor: color,
+    });
+    // Day 0 renewal rate bar (lighter shade)
+    datasets.push({
+      label: c + ' (Day 0)',
+      data: data.series[c].map(p => p.day0_rate),
+      backgroundColor: color + '66',
+      borderColor: color,
+      borderWidth: 1,
+    });
+  });
   if (dateChartObj) dateChartObj.destroy();
   dateChartObj = new Chart(ctx, {
     type: 'bar',
@@ -542,8 +555,11 @@ function renderDateChart(data) {
       plugins: {
         legend: { position: 'top' },
         tooltip: { callbacks: { afterLabel: (item) => {
-          const p = data.series[item.dataset.label][item.dataIndex];
-          return `${p.renewed} / ${p.total} renewed`;
+          const label = item.dataset.label;
+          const isDay0 = label.includes('Day 0');
+          const cohort = label.replace(' (Day 0)', '');
+          const p = data.series[cohort][item.dataIndex];
+          return isDay0 ? `${p.day0} / ${p.total} recharged same day` : `${p.renewed} / ${p.total} renewed`;
         }}}
       },
       scales: {
@@ -555,18 +571,25 @@ function renderDateChart(data) {
 }
 
 function renderDateTable(data) {
-  document.getElementById('dateTblHead').innerHTML =
-    '<tr><th>Date</th>' + data.cohorts.map(c => `<th>${c}</th>`).join('') + '</tr>';
+  const headers = ['<th>Date</th>'];
+  data.cohorts.forEach(c => {
+    headers.push(`<th>${c} Overall</th>`);
+    headers.push(`<th>${c} Day 0</th>`);
+  });
+  document.getElementById('dateTblHead').innerHTML = '<tr>' + headers.join('') + '</tr>';
 
   const body = document.getElementById('dateTblBody');
   const html = data.dates.map((date, i) => {
-    const cells = data.cohorts.map(c => {
+    const cells = [];
+    data.cohorts.forEach(c => {
       const p = data.series[c][i];
-      return `<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`;
-    }).join('');
-    return `<tr><td>${date}</td>${cells}</tr>`;
+      cells.push(`<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`);
+      cells.push(`<td style="color:#7c3aed">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>`);
+    });
+    return `<tr><td>${date}</td>${cells.join('')}</tr>`;
   }).join('');
-  body.innerHTML = html || `<tr><td colspan="${data.cohorts.length+1}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
+  const colspan = 1 + data.cohorts.length * 2;
+  body.innerHTML = html || `<tr><td colspan="${colspan}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
 }
 
 // ─── Plan Opted by Renewed Customers ─────────────────────────────────────────
@@ -1167,6 +1190,8 @@ def _build_cohort_dashboard_data(period="all"):
         if cohort not in cohorts_seen:
             cohorts_seen.append(cohort)
         renewed = (r.get("Renewal Status") or "").strip().lower() == "yes"
+        renewal_day_raw = (r.get("Renewal day") or "").strip()
+        day0 = renewed and renewal_day_raw == "0"
 
         overall["total"] += 1
         if renewed:
@@ -1174,10 +1199,12 @@ def _build_cohort_dashboard_data(period="all"):
         _bucket_stat(cohort_totals, cohort, renewed)
 
         if dt:
-            bucket = date_agg.setdefault(dt, {}).setdefault(cohort, {"total": 0, "renewed": 0})
+            bucket = date_agg.setdefault(dt, {}).setdefault(cohort, {"total": 0, "renewed": 0, "day0": 0})
             bucket["total"] += 1
             if renewed:
                 bucket["renewed"] += 1
+            if day0:
+                bucket["day0"] += 1
 
         price = _parse_price(r.get("Plan Amount"))
         if price is not None and renewed:
@@ -1205,8 +1232,10 @@ def _build_cohort_dashboard_data(period="all"):
     for c in cohorts:
         pts = []
         for dt in dates_sorted:
-            stat = date_agg[dt].get(c, {"total": 0, "renewed": 0})
-            pts.append({"total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat)})
+            stat = date_agg[dt].get(c, {"total": 0, "renewed": 0, "day0": 0})
+            day0_rate = round(stat["day0"] / stat["total"] * 100, 1) if stat["total"] else 0
+            pts.append({"total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat),
+                        "day0": stat["day0"], "day0_rate": day0_rate})
         series[c] = pts
 
     # Plan opted by renewed customers — bracket x cohort, renewed only
