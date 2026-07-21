@@ -486,8 +486,8 @@ async function loadReport(forceRefresh=false) {
     document.getElementById('cohortMeta').textContent = data.row_count + ' rows synced';
 
     renderSummary(data.summary);
-    renderDateChart(data);
-    renderDateTable(data);
+    renderDateChart(data, currentPeriod);
+    renderDateTable(data, currentPeriod);
     renderPlanTable(data.cohorts, data.plan_breakdown);
     renderTypeBreakdown(data.cohorts, data.type_breakdown);
     renderTypeRate(data.cohorts, data.type_cohort_rate);
@@ -525,25 +525,26 @@ function renderSummary(s) {
   }
 }
 
-function renderDateChart(data) {
+function renderDateChart(data, period) {
   const ctx = document.getElementById('dateChart').getContext('2d');
+  const showDay0 = period === 'fullaijuly';
   const datasets = [];
   data.cohorts.forEach(c => {
     const color = COHORT_COLORS[c] || '#64748b';
-    // Overall renewal rate bar
     datasets.push({
       label: c,
       data: data.series[c].map(p => p.rate),
       backgroundColor: color,
     });
-    // Day 0 renewal rate bar (lighter shade)
-    datasets.push({
-      label: c + ' (Day 0)',
-      data: data.series[c].map(p => p.day0_rate),
-      backgroundColor: color + '66',
-      borderColor: color,
-      borderWidth: 1,
-    });
+    if (showDay0) {
+      datasets.push({
+        label: c + ' (Day 0)',
+        data: data.series[c].map(p => p.day0_rate),
+        backgroundColor: color + '66',
+        borderColor: color,
+        borderWidth: 1,
+      });
+    }
   });
   if (dateChartObj) dateChartObj.destroy();
   dateChartObj = new Chart(ctx, {
@@ -570,11 +571,12 @@ function renderDateChart(data) {
   });
 }
 
-function renderDateTable(data) {
+function renderDateTable(data, period) {
+  const showDay0 = period === 'fullaijuly';
   const headers = ['<th>Date</th>'];
   data.cohorts.forEach(c => {
-    headers.push(`<th>${c} Overall</th>`);
-    headers.push(`<th>${c} Day 0</th>`);
+    headers.push(`<th>${c}</th>`);
+    if (showDay0) headers.push(`<th>${c} Day 0</th>`);
   });
   document.getElementById('dateTblHead').innerHTML = '<tr>' + headers.join('') + '</tr>';
 
@@ -584,11 +586,11 @@ function renderDateTable(data) {
     data.cohorts.forEach(c => {
       const p = data.series[c][i];
       cells.push(`<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`);
-      cells.push(`<td style="color:#7c3aed">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>`);
+      if (showDay0) cells.push(`<td style="color:#7c3aed">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>`);
     });
     return `<tr><td>${date}</td>${cells.join('')}</tr>`;
   }).join('');
-  const colspan = 1 + data.cohorts.length * 2;
+  const colspan = 1 + data.cohorts.length * (showDay0 ? 2 : 1);
   body.innerHTML = html || `<tr><td colspan="${colspan}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
 }
 
