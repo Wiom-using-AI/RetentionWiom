@@ -377,6 +377,8 @@ tbody tr:hover td { background: #f8faff; }
       <div class="stat-card" id="sumCallCard"><div class="num" id="sumCall">0%</div><div class="lbl">Call Renewal Rate</div><div class="sub" id="sumCallFrac"></div></div>
       <div class="stat-card purple" id="sumAiCard"><div class="num" id="sumAi">0%</div><div class="lbl">AI Call Renewal Rate</div><div class="sub" id="sumAiFrac"></div></div>
       <div class="stat-card orange" id="sumNoCallCard" style="display:none"><div class="num" id="sumNoCall">0%</div><div class="lbl">No Call Renewal Rate</div><div class="sub" id="sumNoCallFrac"></div></div>
+      <div class="stat-card green" id="sumR15Card" style="display:none"><div class="num" id="sumR15">0%</div><div class="lbl">Retention till R15 (Day 4)</div><div class="sub" id="sumR15Frac"></div></div>
+      <div class="stat-card purple" id="sumR11Card" style="display:none"><div class="num" id="sumR11">0%</div><div class="lbl">Retention till R11 (Day 0)</div><div class="sub" id="sumR11Frac"></div></div>
     </div>
 
     <div id="reportEmpty" class="empty-state" style="display:none">
@@ -504,12 +506,15 @@ function renderSummary(s) {
   document.getElementById('sumRate').textContent = s.rate + '%';
   document.getElementById('sumRateFrac').textContent = `${s.renewed}/${s.total}`;
 
+  const isFullAI = currentPeriod === 'fullaijuly';
+
   const call = s.by_cohort['Call'] ?? {rate:0, renewed:0, total:0};
+  document.getElementById('sumCallCard').style.display = isFullAI ? 'none' : '';
   document.getElementById('sumCall').textContent = call.rate + '%';
   document.getElementById('sumCallFrac').textContent = `${call.renewed}/${call.total}`;
 
   const hasAi = !!s.by_cohort['AI Call'];
-  document.getElementById('sumAiCard').style.display = hasAi ? '' : 'none';
+  document.getElementById('sumAiCard').style.display = (hasAi && !isFullAI) ? '' : 'none';
   if (hasAi) {
     document.getElementById('sumAi').textContent = s.by_cohort['AI Call'].rate + '%';
     document.getElementById('sumAiFrac').textContent = `${s.by_cohort['AI Call'].renewed}/${s.by_cohort['AI Call'].total}`;
@@ -523,26 +528,39 @@ function renderSummary(s) {
     document.getElementById('sumNoCall').textContent = noCallData.rate + '%';
     document.getElementById('sumNoCallFrac').textContent = `${noCallData.renewed}/${noCallData.total}`;
   }
+
+  // R15 / R11 cards: only on 100% AI tab
+  document.getElementById('sumR15Card').style.display = isFullAI ? '' : 'none';
+  document.getElementById('sumR11Card').style.display = isFullAI ? '' : 'none';
+  if (isFullAI) {
+    document.getElementById('sumR15').textContent = s.day4_rate + '%';
+    document.getElementById('sumR15Frac').textContent = `${s.day4}/${s.r15_eligible} (crossed Day 4)`;
+    document.getElementById('sumR11').textContent = s.day0_rate + '%';
+    document.getElementById('sumR11Frac').textContent = `${s.day0}/${s.total} (same day)`;
+  }
 }
 
 function renderDateChart(data, period) {
   const ctx = document.getElementById('dateChart').getContext('2d');
-  const showDay0 = period === 'fullaijuly';
+  const isFullAI = period === 'fullaijuly';
   const datasets = [];
   data.cohorts.forEach(c => {
     const color = COHORT_COLORS[c] || '#64748b';
     datasets.push({
-      label: c,
+      label: isFullAI ? 'Overall' : c,
       data: data.series[c].map(p => p.rate),
       backgroundColor: color,
     });
-    if (showDay0) {
+    if (isFullAI) {
       datasets.push({
-        label: c + ' (Day 0)',
+        label: 'Till R15 (Day 4)',
+        data: data.series[c].map(p => p.day4_rate !== null ? p.day4_rate : 0),
+        backgroundColor: '#10b981',
+      });
+      datasets.push({
+        label: 'Till R11 (Day 0)',
         data: data.series[c].map(p => p.day0_rate),
-        backgroundColor: color + '66',
-        borderColor: color,
-        borderWidth: 1,
+        backgroundColor: '#f59e0b',
       });
     }
   });
@@ -557,40 +575,49 @@ function renderDateChart(data, period) {
         legend: { position: 'top' },
         tooltip: { callbacks: { afterLabel: (item) => {
           const label = item.dataset.label;
-          const isDay0 = label.includes('Day 0');
-          const cohort = label.replace(' (Day 0)', '');
+          const cohort = data.cohorts[0];
           const p = data.series[cohort][item.dataIndex];
-          return isDay0 ? `${p.day0} / ${p.total} recharged same day` : `${p.renewed} / ${p.total} renewed`;
+          if (label === 'Till R15 (Day 4)') return `${p.day4}/${p.r15_eligible} (crossed Day 4)`;
+          if (label === 'Till R11 (Day 0)') return `${p.day0}/${p.total} (same day)`;
+          return `${p.renewed}/${p.total} renewed`;
         }}}
       },
       scales: {
         y: { beginAtZero: true, max: 100, title: { display: true, text: 'Renewal Rate (%)' } },
-        x: { title: { display: true, text: 'Plan Expiry Date (Cohort Day)' } }
+        x: { title: { display: true, text: isFullAI ? 'Expiry Date' : 'Plan Expiry Date (Cohort Day)' } }
       }
     }
   });
 }
 
 function renderDateTable(data, period) {
-  const showDay0 = period === 'fullaijuly';
-  const headers = ['<th>Date</th>'];
-  data.cohorts.forEach(c => {
-    headers.push(`<th>${c}</th>`);
-    if (showDay0) headers.push(`<th>${c} Day 0</th>`);
-  });
+  const isFullAI = period === 'fullaijuly';
+  const headers = isFullAI
+    ? ['<th>Expiry Date</th><th>Call Date</th><th>Overall</th><th>Till R15 (Day 4)</th><th>Till R11 (Day 0)</th>']
+    : ['<th>Date</th>' + data.cohorts.map(c => `<th>${c}</th>`).join('')];
   document.getElementById('dateTblHead').innerHTML = '<tr>' + headers.join('') + '</tr>';
 
   const body = document.getElementById('dateTblBody');
   const html = data.dates.map((date, i) => {
-    const cells = [];
-    data.cohorts.forEach(c => {
-      const p = data.series[c][i];
-      cells.push(`<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`);
-      if (showDay0) cells.push(`<td style="color:#7c3aed">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>`);
-    });
-    return `<tr><td>${date}</td>${cells.join('')}</tr>`;
+    if (isFullAI) {
+      const p = data.series[data.cohorts[0]][i];
+      const d4 = p.day4_rate !== null ? `${p.day4_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day4}/${p.r15_eligible})</span>` : `<span style="color:#94a3b8">—</span>`;
+      return `<tr>
+        <td>${date}</td>
+        <td style="color:#64748b">${p.call_date || '—'}</td>
+        <td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>
+        <td style="color:#10b981">${d4}</td>
+        <td style="color:#f59e0b">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>
+      </tr>`;
+    } else {
+      const cells = data.cohorts.map(c => {
+        const p = data.series[c][i];
+        return `<td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>`;
+      }).join('');
+      return `<tr><td>${date}</td>${cells}</tr>`;
+    }
   }).join('');
-  const colspan = 1 + data.cohorts.length * (showDay0 ? 2 : 1);
+  const colspan = isFullAI ? 5 : 1 + data.cohorts.length;
   body.innerHTML = html || `<tr><td colspan="${colspan}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
 }
 
@@ -1166,9 +1193,11 @@ def _in_period(dt, period):
 def _build_cohort_dashboard_data(period="all"):
     rows = _fetch_cohort_rows()
     cohorts_seen = []
-    date_agg = {}       # date -> cohort -> {total, renewed}
-    overall = {"total": 0, "renewed": 0}
+    date_agg = {}       # date -> cohort -> {total, renewed, day0, day4, r15_eligible, call_date}
+    overall = {"total": 0, "renewed": 0, "day0": 0, "day4": 0, "r15_eligible": 0}
     cohort_totals = {}  # cohort -> {total, renewed}
+    from datetime import date as _date
+    _today = _date.today()
     matched_rows = 0
     bracket_cohort_renewed = {}       # bracket -> cohort -> renewed count
     type_bracket_cohort_renewed = {}  # type -> bracket -> cohort -> renewed count
@@ -1193,20 +1222,44 @@ def _build_cohort_dashboard_data(period="all"):
             cohorts_seen.append(cohort)
         renewed = (r.get("Renewal Status") or "").strip().lower() == "yes"
         renewal_day_raw = (r.get("Renewal day") or "").strip()
-        day0 = renewed and renewal_day_raw == "0"
+        try:
+            renewal_day_int = int(renewal_day_raw) if renewal_day_raw else None
+        except:
+            renewal_day_int = None
+        day0 = renewed and renewal_day_int == 0
+        day4 = renewed and renewal_day_int is not None and renewal_day_int <= 4
+
+        call_date_raw = (r.get("Call Date") or "").strip()
+        call_dt = _parse_cohort_date(call_date_raw)
+        r15_eligible = call_dt is not None and (_today - call_dt.date()).days >= 4
 
         overall["total"] += 1
         if renewed:
             overall["renewed"] += 1
+        if day0:
+            overall["day0"] += 1
+        if r15_eligible:
+            overall["r15_eligible"] += 1
+            if day4:
+                overall["day4"] += 1
         _bucket_stat(cohort_totals, cohort, renewed)
 
         if dt:
-            bucket = date_agg.setdefault(dt, {}).setdefault(cohort, {"total": 0, "renewed": 0, "day0": 0})
+            bucket = date_agg.setdefault(dt, {}).setdefault(cohort, {
+                "total": 0, "renewed": 0, "day0": 0,
+                "day4": 0, "r15_eligible": 0, "call_date": call_dt
+            })
             bucket["total"] += 1
             if renewed:
                 bucket["renewed"] += 1
             if day0:
                 bucket["day0"] += 1
+            if r15_eligible:
+                bucket["r15_eligible"] += 1
+                if day4:
+                    bucket["day4"] += 1
+            if call_dt and not bucket["call_date"]:
+                bucket["call_date"] = call_dt
 
         price = _parse_price(r.get("Plan Amount"))
         if price is not None and renewed:
@@ -1234,10 +1287,17 @@ def _build_cohort_dashboard_data(period="all"):
     for c in cohorts:
         pts = []
         for dt in dates_sorted:
-            stat = date_agg[dt].get(c, {"total": 0, "renewed": 0, "day0": 0})
+            stat = date_agg[dt].get(c, {"total": 0, "renewed": 0, "day0": 0, "day4": 0, "r15_eligible": 0, "call_date": None})
             day0_rate = round(stat["day0"] / stat["total"] * 100, 1) if stat["total"] else 0
-            pts.append({"total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat),
-                        "day0": stat["day0"], "day0_rate": day0_rate})
+            day4_rate = round(stat["day4"] / stat["r15_eligible"] * 100, 1) if stat["r15_eligible"] else None
+            call_date_str = stat["call_date"].strftime("%d %b") if stat["call_date"] else ""
+            pts.append({
+                "total": stat["total"], "renewed": stat["renewed"], "rate": _rate(stat),
+                "day0": stat["day0"], "day0_rate": day0_rate,
+                "day4": stat["day4"], "day4_rate": day4_rate,
+                "r15_eligible": stat["r15_eligible"],
+                "call_date": call_date_str,
+            })
         series[c] = pts
 
     # Plan opted by renewed customers — bracket x cohort, renewed only
@@ -1293,6 +1353,11 @@ def _build_cohort_dashboard_data(period="all"):
             "total": overall["total"],
             "renewed": overall["renewed"],
             "rate": _rate(overall),
+            "day0": overall["day0"],
+            "day0_rate": round(overall["day0"] / overall["total"] * 100, 1) if overall["total"] else 0,
+            "day4": overall["day4"],
+            "r15_eligible": overall["r15_eligible"],
+            "day4_rate": round(overall["day4"] / overall["r15_eligible"] * 100, 1) if overall["r15_eligible"] else 0,
             "by_cohort": {c: {"total": cohort_totals[c]["total"], "renewed": cohort_totals[c]["renewed"],
                                "rate": _rate(cohort_totals[c])} for c in cohorts},
         },
