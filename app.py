@@ -2229,14 +2229,12 @@ def r11_campaign():
     try:
         sql = f"""
         WITH expired AS (
-            SELECT t.ROUTER_NAS_ID, t.DEVICE_ID,
-                   LEFT(b.MOBILE, 10) AS MOBILE,
+            SELECT t.ROUTER_NAS_ID, t.DEVICE_ID, t.MOBILE,
                    DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
             FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-            LEFT JOIN PROD_DB.PUBLIC.T_WG_CUSTOMER b ON t.ROUTER_NAS_ID = b.NASID
-            WHERE t.AUTH_STATE = 1
-              AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+            WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
               AND t.MOBILE <> ''
+              AND t.MOBILE > '5999999999'
               AND t.DEVICE_LIMIT = 10
               AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
             QUALIFY ROW_NUMBER() OVER (
@@ -2246,15 +2244,12 @@ def r11_campaign():
         )
         SELECT COUNT(*) AS cnt
         FROM expired e
-        WHERE e.MOBILE IS NOT NULL
-          AND e.MOBILE > '5999999999'
-          AND NOT EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
-            LEFT JOIN PROD_DB.PUBLIC.T_WG_CUSTOMER b2 ON t2.ROUTER_NAS_ID = b2.NASID
-            WHERE LEFT(b2.MOBILE, 10) = e.MOBILE
+            WHERE t2.MOBILE = e.MOBILE
               AND t2.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
               AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > e.expiry_date
-          )
+        )
         """
         rows = _metabase_query(sql)
         if rows:
@@ -2286,15 +2281,14 @@ def r11_campaign():
 DISPOSITION_RENEWAL_SQL = """
 WITH r11_cohort AS (
     SELECT
-        LEFT(b.MOBILE, 10) AS MOBILE,
+        t.MOBILE,
         t.ROUTER_NAS_ID,
         t.DEVICE_ID,
         DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
     FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-    LEFT JOIN PROD_DB.PUBLIC.T_WG_CUSTOMER b ON t.ROUTER_NAS_ID = b.NASID
-    WHERE t.AUTH_STATE = 1
-      AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+    WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
       AND t.MOBILE <> ''
+      AND t.MOBILE > '5999999999'
       AND t.DEVICE_LIMIT = 10
       AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
             BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
@@ -2307,15 +2301,12 @@ SELECT
     r.expiry_date::VARCHAR AS expiry_date,
     COUNT(*) AS total
 FROM r11_cohort r
-WHERE r.MOBILE IS NOT NULL
-  AND r.MOBILE > '5999999999'
-  AND NOT EXISTS (
+WHERE NOT EXISTS (
     SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
-    LEFT JOIN PROD_DB.PUBLIC.T_WG_CUSTOMER b2 ON t2.ROUTER_NAS_ID = b2.NASID
-    WHERE LEFT(b2.MOBILE, 10) = r.MOBILE
+    WHERE t2.MOBILE = r.MOBILE
       AND t2.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
       AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > r.expiry_date
-  )
+)
 GROUP BY r.expiry_date
 ORDER BY r.expiry_date DESC
 """
