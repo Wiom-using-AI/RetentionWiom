@@ -224,7 +224,7 @@ def _job_round1():
     threading.Thread(target=_monitor_and_redial, daemon=True).start()
 
 scheduler = BackgroundScheduler(timezone=IST)
-scheduler.add_job(_job_round1, "cron", hour=10, minute=0, id="round1_daily")
+scheduler.add_job(_job_round1, "cron", hour=12, minute=0, id="round1_daily")
 scheduler.start()
 log.info("Scheduler started — daily calls at 10:00 AM IST")
 
@@ -337,17 +337,55 @@ tbody tr:hover td { background: #f8faff; }
 @media (max-width: 900px) {
   .stats { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* Main view navigation bar */
+.main-nav-bar {
+  background: #fff; border-bottom: 2px solid #e2e8f0;
+  display: flex; gap: 0; padding: 0 28px;
+}
+.mv-btn {
+  background: none; border: none; padding: 14px 22px;
+  font-size: 13px; font-weight: 700; color: #64748b;
+  cursor: pointer; border-bottom: 3px solid transparent;
+  margin-bottom: -2px; transition: .15s;
+}
+.mv-btn:hover { color: #1e3a8a; }
+.mv-btn.active { color: #1e3a8a; border-bottom-color: #1e3a8a; }
+
+/* R11 campaign specific */
+.r11-meta { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; gap: 32px; align-items: center; flex-wrap: wrap; }
+.r11-meta-item { text-align: center; }
+.r11-meta-item .val { font-size: 22px; font-weight: 800; color: #1e3a8a; }
+.r11-meta-item .lbl { font-size: 11px; color: #64748b; margin-top: 2px; }
+.disp-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; background: #f1f5f9; color: #475569; }
+.disp-badge.green { background: #dcfce7; color: #166534; }
+.disp-badge.amber { background: #fef3c7; color: #92400e; }
+.disp-badge.red   { background: #fee2e2; color: #991b1b; }
+.disp-badge.blue  { background: #dbeafe; color: #1e40af; }
+.sched-status { display: inline-flex; align-items: center; gap: 6px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 14px; font-size: 12px; color: #166534; font-weight: 600; }
+.sched-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 </style>
 </head>
 <body>
 
 <!-- Header -->
 <div class="header">
-  <h1>📊 Wiom Renewal Report Dashboard</h1>
+  <h1>📊 Wiom Retention Dashboard</h1>
   <div class="header-right" id="hTime"></div>
 </div>
 
+<!-- Main Navigation -->
+<div class="main-nav-bar">
+  <button class="mv-btn active" id="mv-report" onclick="switchView('report')">📊 Renewal Report</button>
+  <button class="mv-btn" id="mv-r11" onclick="switchView('r11')">📞 R11 Campaign</button>
+  <button class="mv-btn" id="mv-dispositions" onclick="switchView('dispositions')">📋 Retention Dispositions</button>
+</div>
+
 <div class="main">
+
+<!-- ══════════════════════════════════════════════════════ VIEW: RENEWAL REPORT -->
+<div id="view-report">
   <div class="content">
 
     <div class="card">
@@ -454,6 +492,120 @@ tbody tr:hover td { background: #f8faff; }
     </div>
 
   </div><!-- /content -->
+</div><!-- /view-report -->
+
+<!-- ══════════════════════════════════════════════════════ VIEW: R11 CAMPAIGN -->
+<div id="view-r11" style="display:none">
+  <div class="content">
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+        <div>
+          <div style="font-size:15px;font-weight:700;color:#1e3a8a">📞 R11 Auto-Campaign</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px">Customers whose plan expired 11 days ago — auto-called at 12:00 PM IST daily</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <div class="sched-status"><div class="sched-dot"></div><span id="r11NextRun">Loading…</span></div>
+          <button class="btn btn-sm" style="background:#1e3a8a;color:#fff" onclick="triggerR11Now()">▶ Run Now</button>
+          <button class="btn btn-sm btn-outline" onclick="loadR11Campaign(true)">🔄 Refresh</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="r11-meta" id="r11Meta">
+      <div class="r11-meta-item"><div class="val" id="r11Date">—</div><div class="lbl">R11 Date (Today −11)</div></div>
+      <div class="r11-meta-item"><div class="val" id="r11MetaCount">—</div><div class="lbl">Customers in Metabase</div></div>
+      <div class="r11-meta-item"><div class="val" id="r11CallsMade">—</div><div class="lbl">Calls Triggered Today</div></div>
+      <div class="r11-meta-item"><div class="val" id="r11Answered">—</div><div class="lbl">Answered</div></div>
+      <div class="r11-meta-item"><div class="val" id="r11Pending">—</div><div class="lbl">Pending / No Answer</div></div>
+    </div>
+
+    <!-- Disposition breakdown -->
+    <div class="stats" id="r11DispCards"></div>
+
+    <!-- Call table -->
+    <div class="card">
+      <div class="card-title">📋 Today's Calls</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Phone</th><th>Expiry</th><th>Status</th><th>Disposition</th><th>VoC</th><th>Time</th></tr></thead>
+          <tbody id="r11CallTbl"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /view-r11 -->
+
+<!-- ══════════════════════════════════════════════════════ VIEW: DISPOSITIONS -->
+<div id="view-dispositions" style="display:none">
+  <div class="content">
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:15px;font-weight:700;color:#1e3a8a">📋 Retention Campaign Dispositions</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px">All call dispositions with renewal status from Metabase</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="dispDays" onchange="loadDispositions()" class="btn btn-sm btn-outline" style="cursor:pointer">
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="60">Last 60 days</option>
+          </select>
+          <button class="btn btn-sm btn-outline" onclick="loadDispositions(true)">🔄 Refresh</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary stats -->
+    <div class="stats">
+      <div class="stat-card"><div class="num" id="dTotalCalled">—</div><div class="lbl">Total Called</div></div>
+      <div class="stat-card green"><div class="num" id="dRenewalRate">—</div><div class="lbl">Renewal Rate</div><div class="sub" id="dRenewalFrac"></div></div>
+      <div class="stat-card orange"><div class="num" id="dAnswerRate">—</div><div class="lbl">Answer Rate</div><div class="sub" id="dAnswerFrac"></div></div>
+      <div class="stat-card purple"><div class="num" id="dSameDayRate">—</div><div class="lbl">Same-Day Renewal</div><div class="sub" id="dSameDayFrac"></div></div>
+    </div>
+
+    <div id="dispEmpty" class="empty-state" style="display:none">
+      <div class="big">📋</div><span id="dispErr">No data</span>
+    </div>
+
+    <div id="dispBody">
+      <!-- Disposition breakdown -->
+      <div class="card">
+        <div class="card-title">📊 Disposition Breakdown</div>
+        <div style="position:relative;height:300px"><canvas id="dispChart"></canvas></div>
+      </div>
+
+      <!-- Date-wise renewal from Metabase -->
+      <div class="card">
+        <div class="card-title">📅 Date-wise: R11 Cohort Renewal (from Metabase)</div>
+        <div style="font-size:12px;color:#64748b;margin:-10px 0 16px">For each expiry date batch, how many customers recharged after being called.</div>
+        <div style="position:relative;height:280px"><canvas id="dispRenewalChart"></canvas></div>
+        <div class="tbl-wrap" style="margin-top:16px">
+          <table>
+            <thead><tr><th>Expiry Date</th><th>Total</th><th>Renewed</th><th>Renewal Rate</th></tr></thead>
+            <tbody id="dispRenewalTbl"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Disposition table -->
+      <div class="card">
+        <div class="card-title">📋 Disposition Details</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Disposition</th><th>Count</th><th>%</th><th>Renewed After Call</th></tr></thead>
+            <tbody id="dispTbl"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /view-dispositions -->
+
 </div><!-- /main -->
 
 <script>
@@ -812,6 +964,183 @@ function renderRenewalDay(data) {
 }
 
 loadReport();  // default period = till21
+
+// ─── Main View Switch ─────────────────────────────────────────────────────────
+function switchView(view) {
+  ['report','r11','dispositions'].forEach(v => {
+    document.getElementById('view-'+v).style.display = v===view ? '' : 'none';
+    document.getElementById('mv-'+v).classList.toggle('active', v===view);
+  });
+  if (view==='r11')           loadR11Campaign();
+  if (view==='dispositions')  loadDispositions();
+}
+
+// ─── R11 Campaign Tab ─────────────────────────────────────────────────────────
+const DISP_COLORS = {
+  'Will Recharge Today':   '#22c55e',
+  'Will Recharge Later':   '#84cc16',
+  'Already Recharged':     '#059669',
+  'Callback Scheduled':    '#3b82f6',
+  'Out of Town':           '#f59e0b',
+  'Not Answered / Busy':   '#94a3b8',
+  'Wants Device Return':   '#f97316',
+  'Device Already Returned':'#a78bfa',
+  "Don't Want – Service Issue": '#ef4444',
+  "Don't Want – Personal Reason": '#f43f5e',
+  'Wrong Number':          '#e2e8f0',
+  'Pending':               '#cbd5e1',
+};
+
+async function loadR11Campaign(forceRefresh=false) {
+  try {
+    const r = await fetch('/api/r11-campaign' + (forceRefresh ? '?refresh=1' : ''));
+    const d = await r.json();
+
+    document.getElementById('r11Date').textContent       = d.r11_date || '—';
+    document.getElementById('r11MetaCount').textContent  = d.r11_count != null ? d.r11_count : '—';
+    document.getElementById('r11CallsMade').textContent  = d.calls_made;
+    document.getElementById('r11Answered').textContent   = d.answered;
+    document.getElementById('r11Pending').textContent    = d.pending;
+    document.getElementById('r11NextRun').textContent    = d.next_run ? 'Next: ' + d.next_run : 'Scheduled 12:00 PM IST';
+
+    // Disposition cards
+    const cards = document.getElementById('r11DispCards');
+    const disp = d.disposition_counts || {};
+    cards.innerHTML = Object.entries(disp).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `
+      <div class="stat-card">
+        <div class="num" style="color:${DISP_COLORS[k]||'#1e3a8a'};font-size:22px">${v}</div>
+        <div class="lbl">${k}</div>
+      </div>`).join('') || '<div style="color:#94a3b8;font-size:13px;padding:12px">No calls yet today</div>';
+
+    // Call table
+    const tbl = document.getElementById('r11CallTbl');
+    const calls = d.calls || [];
+    if (!calls.length) {
+      tbl.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="big">📞</div>No calls today yet</div></td></tr>';
+    } else {
+      const dispBadgeClass = disp => {
+        if (['Will Recharge Today','Already Recharged'].includes(disp)) return 'green';
+        if (['Will Recharge Later','Callback Scheduled'].includes(disp)) return 'blue';
+        if (["Don't Want – Service Issue","Don't Want – Personal Reason","Wants Device Return"].includes(disp)) return 'red';
+        if (disp === 'Not Answered / Busy') return '';
+        return 'amber';
+      };
+      tbl.innerHTML = [...calls].reverse().map(c => `<tr>
+        <td><b>${c.name||'—'}</b></td>
+        <td>${c.phone||'—'}</td>
+        <td>${c.expiry||'—'}</td>
+        <td>${c.status||'—'}</td>
+        <td><span class="disp-badge ${dispBadgeClass(c.disposition)}">${c.disposition||'Pending'}</span></td>
+        <td style="color:#64748b;font-size:11px;max-width:200px">${c.voc||''}</td>
+        <td style="color:#94a3b8;font-size:11px">${c.time||''}</td>
+      </tr>`).join('');
+    }
+  } catch(e) {
+    console.error('R11 campaign load error', e);
+  }
+}
+
+async function triggerR11Now() {
+  if (!confirm('Trigger R11 campaign calls right now?')) return;
+  const r = await fetch('/api/auto-campaign/trigger', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+  const d = await r.json();
+  alert(d.message || 'Campaign triggered');
+  setTimeout(() => loadR11Campaign(true), 3000);
+}
+
+// ─── Retention Dispositions Tab ───────────────────────────────────────────────
+let dispChartObj = null;
+let dispRenewalChartObj = null;
+
+async function loadDispositions(forceRefresh=false) {
+  document.getElementById('dispEmpty').style.display = 'none';
+  document.getElementById('dispBody').style.display = '';
+  const days = document.getElementById('dispDays').value;
+  try {
+    const params = new URLSearchParams({days});
+    if (forceRefresh) params.set('refresh','1');
+    const r = await fetch('/api/retention-dispositions?' + params.toString());
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    // Summary stats
+    document.getElementById('dTotalCalled').textContent    = d.total_called;
+    document.getElementById('dRenewalRate').textContent    = d.renewal_rate + '%';
+    document.getElementById('dRenewalFrac').textContent    = `${d.renewed}/${d.total_called}`;
+    document.getElementById('dAnswerRate').textContent     = d.answer_rate + '%';
+    document.getElementById('dAnswerFrac').textContent     = `${d.answered}/${d.total_called}`;
+    document.getElementById('dSameDayRate').textContent    = d.same_day_rate + '%';
+    document.getElementById('dSameDayFrac').textContent    = `same-day renewals`;
+
+    // Disposition bar chart
+    const dispEntries = Object.entries(d.disposition_counts||{}).sort((a,b)=>b[1]-a[1]);
+    const ctx1 = document.getElementById('dispChart').getContext('2d');
+    if (dispChartObj) dispChartObj.destroy();
+    dispChartObj = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: dispEntries.map(([k])=>k),
+        datasets: [{
+          label: 'Calls',
+          data: dispEntries.map(([,v])=>v),
+          backgroundColor: dispEntries.map(([k])=>DISP_COLORS[k]||'#94a3b8'),
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
+      }
+    });
+
+    // Disposition table
+    const total = d.total_called || 1;
+    document.getElementById('dispTbl').innerHTML = dispEntries.map(([k,v]) => `<tr>
+      <td><span class="disp-badge" style="background:${DISP_COLORS[k]||'#f1f5f9'}20;color:${DISP_COLORS[k]||'#475569'}">${k}</span></td>
+      <td><b>${v}</b></td>
+      <td>${Math.round(v/total*100)}%</td>
+      <td>${d.renewal_by_disp?.[k] != null ? d.renewal_by_disp[k]+'%' : '—'}</td>
+    </tr>`).join('') || '<tr><td colspan="4"><div class="empty-state"><div class="big">📋</div>No data</div></td></tr>';
+
+    // Date-wise renewal chart from Metabase
+    const dates = (d.metabase_renewal||[]).map(r=>r.expiry_date);
+    const rates  = (d.metabase_renewal||[]).map(r=>r.renewal_rate);
+    const ctx2 = document.getElementById('dispRenewalChart').getContext('2d');
+    if (dispRenewalChartObj) dispRenewalChartObj.destroy();
+    if (dates.length) {
+      dispRenewalChartObj = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: dates,
+          datasets: [{
+            label: 'Renewal Rate %',
+            data: rates,
+            backgroundColor: '#7c3aed',
+            borderRadius: 4,
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position:'top' } },
+          scales: { y: { beginAtZero:true, max:100, title:{display:true,text:'Renewal Rate (%)'} } }
+        }
+      });
+      document.getElementById('dispRenewalTbl').innerHTML = (d.metabase_renewal||[]).map(r => `<tr>
+        <td>${r.expiry_date}</td>
+        <td>${r.total}</td>
+        <td>${r.renewed}</td>
+        <td><b style="color:#7c3aed">${r.renewal_rate}%</b></td>
+      </tr>`).join('');
+    } else {
+      document.getElementById('dispRenewalTbl').innerHTML = '<tr><td colspan="4" style="color:#94a3b8;text-align:center">Metabase data unavailable — check METABASE_DB_ID env var</td></tr>';
+    }
+
+  } catch(e) {
+    document.getElementById('dispEmpty').style.display = '';
+    document.getElementById('dispBody').style.display  = 'none';
+    document.getElementById('dispErr').textContent = e.message;
+  }
+}
 </script>
 </body>
 </html>
@@ -1850,6 +2179,192 @@ def sample_csv():
     )
     return Response(data, mimetype="text/csv",
         headers={"Content-Disposition":"attachment; filename=sample_contacts.csv"})
+
+
+def _metabase_query(sql):
+    """Run a native SQL query against Metabase and return rows as list of dicts."""
+    url = f"{os.getenv('METABASE_URL','https://metabase.wiom.in')}/api/dataset"
+    headers = {
+        "x-api-key": os.getenv("METABASE_API_KEY",""),
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "database": int(os.getenv("METABASE_DB_ID","1")),
+        "type": "native",
+        "native": {"query": sql},
+    }
+    r = req.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    result = r.json()
+    cols = [c["name"] for c in result.get("data",{}).get("cols",[])]
+    rows = result.get("data",{}).get("rows",[])
+    return [dict(zip(cols, row)) for row in rows]
+
+
+@app.route("/api/r11-campaign")
+def r11_campaign():
+    """Today's R11 auto-campaign status: Metabase count + call_log dispositions."""
+    today     = date.today()
+    r11_date  = (today - timedelta(days=11)).strftime("%Y-%m-%d")
+    today_str = today.strftime("%d %b")
+
+    # Filter call_log to calls made today
+    today_calls = [c for c in call_log if (c.get("time","") or "").startswith(today_str)]
+
+    disp_counts = {}
+    for c in today_calls:
+        d = c.get("disposition","Pending") or "Pending"
+        disp_counts[d] = disp_counts.get(d, 0) + 1
+
+    answered = sum(1 for c in today_calls if c.get("status") not in ("queued","no-answer","busy","failed","error",""))
+    pending  = len(today_calls) - answered
+
+    # Metabase: count of R11 customers for today's R11 date
+    r11_count = None
+    try:
+        sql = f"""
+        SELECT COUNT(DISTINCT t.ROUTER_NAS_ID) as cnt
+        FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+        WHERE t.OTP = 'DONE'
+          AND t.DEVICE_LIMIT = 10
+          AND t.MOBILE > '5999999999'
+          AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
+        """
+        rows = _metabase_query(sql)
+        if rows:
+            r11_count = rows[0].get("CNT") or rows[0].get("cnt")
+    except Exception as e:
+        log.warning(f"R11 Metabase count failed: {e}")
+
+    # Next scheduled run
+    next_run = None
+    for job in scheduler.get_jobs():
+        if job.id == "round1_daily":
+            nrt = job.next_run_time
+            if nrt:
+                next_run = nrt.astimezone(IST).strftime("%d %b %I:%M %p IST")
+
+    return jsonify({
+        "r11_date":          r11_date,
+        "today":             today.strftime("%Y-%m-%d"),
+        "r11_count":         r11_count,
+        "calls_made":        len(today_calls),
+        "answered":          answered,
+        "pending":           pending,
+        "next_run":          next_run,
+        "disposition_counts": disp_counts,
+        "calls":             today_calls[-200:],
+    })
+
+
+DISPOSITION_RENEWAL_SQL = """
+WITH r11_cohort AS (
+    SELECT
+        t.MOBILE,
+        t.ROUTER_NAS_ID,
+        DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+    WHERE t.OTP = 'DONE'
+      AND t.DEVICE_LIMIT = 10
+      AND t.MOBILE > '5999999999'
+      AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
+            BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY t.ROUTER_NAS_ID
+        ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
+    ) = 1
+),
+renewals AS (
+    SELECT DISTINCT r.expiry_date, r.MOBILE
+    FROM r11_cohort r
+    JOIN PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
+      ON r.MOBILE = t2.MOBILE
+    WHERE t2.OTP = 'DONE'
+      AND t2.DEVICE_LIMIT = 10
+      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > r.expiry_date
+      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) <= DATEADD('day', 15, r.expiry_date)
+)
+SELECT
+    r.expiry_date::VARCHAR AS expiry_date,
+    COUNT(*) AS total,
+    COUNT(rn.MOBILE) AS renewed,
+    ROUND(COUNT(rn.MOBILE) * 100.0 / NULLIF(COUNT(*),0), 1) AS renewal_rate
+FROM r11_cohort r
+LEFT JOIN renewals rn ON r.MOBILE = rn.MOBILE AND r.expiry_date = rn.expiry_date
+GROUP BY r.expiry_date
+ORDER BY r.expiry_date DESC
+"""
+
+_disp_cache = {}
+
+@app.route("/api/retention-dispositions")
+def retention_dispositions():
+    """Disposition breakdown from call_log + date-wise renewal from Metabase."""
+    import time as _time
+    days  = int(request.args.get("days", 30))
+    force = request.args.get("refresh") == "1"
+    ckey  = f"disp_{days}"
+    now   = _time.time()
+
+    cached = _disp_cache.get(ckey)
+    if not force and cached and (now - cached["ts"] < 300):
+        return jsonify(cached["data"])
+
+    # ── Disposition breakdown from call_log ──────────────────────────────────
+    cutoff = datetime.now() - timedelta(days=days)
+    recent_calls = []
+    for c in call_log:
+        try:
+            t = datetime.strptime(c.get("time",""), "%d %b %H:%M")
+            t = t.replace(year=datetime.now().year)
+            if t >= cutoff:
+                recent_calls.append(c)
+        except Exception:
+            recent_calls.append(c)  # include if date unreadable
+
+    disp_counts = {}
+    for c in recent_calls:
+        d = c.get("disposition","Pending") or "Pending"
+        disp_counts[d] = disp_counts.get(d, 0) + 1
+
+    total_called = len(recent_calls)
+    answered     = sum(1 for c in recent_calls if c.get("status") not in ("queued","no-answer","busy","failed","error",""))
+    answer_rate  = round(answered / total_called * 100, 1) if total_called else 0
+
+    # Renewal = Will Recharge Today + Already Recharged
+    renewed      = sum(v for k,v in disp_counts.items() if k in ("Will Recharge Today","Already Recharged"))
+    renewal_rate = round(renewed / total_called * 100, 1) if total_called else 0
+    same_day     = disp_counts.get("Will Recharge Today", 0)
+    same_day_rate= round(same_day / total_called * 100, 1) if total_called else 0
+
+    # ── Date-wise renewal from Metabase ──────────────────────────────────────
+    metabase_rows = []
+    try:
+        sql = DISPOSITION_RENEWAL_SQL.replace("{days}", str(days + 11))
+        rows = _metabase_query(sql)
+        for r in rows:
+            metabase_rows.append({
+                "expiry_date":   str(r.get("EXPIRY_DATE") or r.get("expiry_date","")),
+                "total":         int(r.get("TOTAL") or r.get("total") or 0),
+                "renewed":       int(r.get("RENEWED") or r.get("renewed") or 0),
+                "renewal_rate":  float(r.get("RENEWAL_RATE") or r.get("renewal_rate") or 0),
+            })
+    except Exception as e:
+        log.warning(f"Dispositions Metabase query failed: {e}")
+
+    data = {
+        "total_called":      total_called,
+        "answered":          answered,
+        "answer_rate":       answer_rate,
+        "renewed":           renewed,
+        "renewal_rate":      renewal_rate,
+        "same_day_rate":     same_day_rate,
+        "disposition_counts": disp_counts,
+        "renewal_by_disp":   {},
+        "metabase_renewal":  metabase_rows,
+    }
+    _disp_cache[ckey] = {"data": data, "ts": now}
+    return jsonify(data)
 
 
 if __name__ == "__main__":
