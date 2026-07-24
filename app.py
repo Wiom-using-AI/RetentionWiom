@@ -2226,36 +2226,23 @@ def r11_campaign():
 
     # Metabase: count of R11 customers for today's R11 date
     r11_count = None
+    r11_error = None
     try:
         sql = f"""
-        WITH expired AS (
-            SELECT t.ROUTER_NAS_ID, t.DEVICE_ID, t.MOBILE,
-                   DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
-            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-            WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-              AND t.MOBILE <> ''
-              AND t.MOBILE > '5999999999'
-              AND t.DEVICE_LIMIT = 10
-              AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY t.ROUTER_NAS_ID, t.DEVICE_ID
-                ORDER BY t.CREATED_ON DESC
-            ) = 1
-        )
         SELECT COUNT(*) AS cnt
-        FROM expired e
-        WHERE NOT EXISTS (
-            SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
-            WHERE t2.MOBILE = e.MOBILE
-              AND t2.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-              AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > e.expiry_date
-        )
+        FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+        WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+          AND t.MOBILE <> ''
+          AND t.MOBILE > '5999999999'
+          AND t.DEVICE_LIMIT = 10
+          AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
         """
         rows = _metabase_query(sql)
         if rows:
             r11_count = rows[0].get("CNT") or rows[0].get("cnt")
     except Exception as e:
         log.warning(f"R11 Metabase count failed: {e}")
+        r11_error = str(e)
 
     # Next scheduled run
     next_run = None
@@ -2269,6 +2256,7 @@ def r11_campaign():
         "r11_date":          r11_date,
         "today":             today.strftime("%Y-%m-%d"),
         "r11_count":         r11_count,
+        "r11_error":         r11_error,
         "calls_made":        len(today_calls),
         "answered":          answered,
         "pending":           pending,
