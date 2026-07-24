@@ -2230,12 +2230,20 @@ def r11_campaign():
     try:
         sql = f"""
         SELECT COUNT(*) AS cnt
-        FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-        WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-          AND t.MOBILE <> ''
-          AND t.MOBILE > '5999999999'
-          AND t.DEVICE_LIMIT = 10
-          AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
+        FROM (
+            SELECT t.ROUTER_NAS_ID, t.DEVICE_ID,
+                   DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+            WHERE t.AUTH_STATE = 1
+              AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+              AND t.MOBILE <> ''
+              AND t.DEVICE_LIMIT = 10
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY t.ROUTER_NAS_ID, t.DEVICE_ID
+                ORDER BY DATEADD('minute', 330, t.CREATED_ON) DESC
+            ) = 1
+        ) latest
+        WHERE expiry_date = '{r11_date}'
         """
         rows = _metabase_query(sql)
         if rows:
@@ -2267,36 +2275,25 @@ def r11_campaign():
 
 
 DISPOSITION_RENEWAL_SQL = """
-WITH r11_cohort AS (
-    SELECT
-        t.MOBILE,
-        t.ROUTER_NAS_ID,
-        t.DEVICE_ID,
-        DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+SELECT
+    expiry_date::VARCHAR AS expiry_date,
+    COUNT(*) AS total
+FROM (
+    SELECT t.ROUTER_NAS_ID, t.DEVICE_ID,
+           DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
     FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-    WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+    WHERE t.AUTH_STATE = 1
+      AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
       AND t.MOBILE <> ''
-      AND t.MOBILE > '5999999999'
       AND t.DEVICE_LIMIT = 10
-      AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
-            BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY t.ROUTER_NAS_ID, t.DEVICE_ID
-        ORDER BY t.CREATED_ON DESC
+        ORDER BY DATEADD('minute', 330, t.CREATED_ON) DESC
     ) = 1
-)
-SELECT
-    r.expiry_date::VARCHAR AS expiry_date,
-    COUNT(*) AS total
-FROM r11_cohort r
-WHERE NOT EXISTS (
-    SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
-    WHERE t2.MOBILE = r.MOBILE
-      AND t2.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > r.expiry_date
-)
-GROUP BY r.expiry_date
-ORDER BY r.expiry_date DESC
+) latest
+WHERE expiry_date BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
+GROUP BY expiry_date
+ORDER BY expiry_date DESC
 """
 
 _disp_cache = {}
