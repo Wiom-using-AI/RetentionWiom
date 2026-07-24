@@ -585,7 +585,7 @@ tbody tr:hover td { background: #f8faff; }
         <div style="position:relative;height:280px"><canvas id="dispRenewalChart"></canvas></div>
         <div class="tbl-wrap" style="margin-top:16px">
           <table>
-            <thead><tr><th>Expiry Date</th><th>Total</th><th>Renewed</th><th>Renewal Rate</th></tr></thead>
+            <thead><tr><th>Expiry Date</th><th>Not Yet Renewed</th></tr></thead>
             <tbody id="dispRenewalTbl"></tbody>
           </table>
         </div>
@@ -1102,9 +1102,9 @@ async function loadDispositions(forceRefresh=false) {
       <td>${d.renewal_by_disp?.[k] != null ? d.renewal_by_disp[k]+'%' : '—'}</td>
     </tr>`).join('') || '<tr><td colspan="4"><div class="empty-state"><div class="big">📋</div>No data</div></td></tr>';
 
-    // Date-wise renewal chart from Metabase
+    // Date-wise not-yet-renewed from Metabase
     const dates = (d.metabase_renewal||[]).map(r=>r.expiry_date);
-    const rates  = (d.metabase_renewal||[]).map(r=>r.renewal_rate);
+    const totals = (d.metabase_renewal||[]).map(r=>r.total);
     const ctx2 = document.getElementById('dispRenewalChart').getContext('2d');
     if (dispRenewalChartObj) dispRenewalChartObj.destroy();
     if (dates.length) {
@@ -1113,8 +1113,8 @@ async function loadDispositions(forceRefresh=false) {
         data: {
           labels: dates,
           datasets: [{
-            label: 'Renewal Rate %',
-            data: rates,
+            label: 'Not Yet Renewed',
+            data: totals,
             backgroundColor: '#7c3aed',
             borderRadius: 4,
           }]
@@ -1122,17 +1122,15 @@ async function loadDispositions(forceRefresh=false) {
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: { legend: { position:'top' } },
-          scales: { y: { beginAtZero:true, max:100, title:{display:true,text:'Renewal Rate (%)'} } }
+          scales: { y: { beginAtZero:true, title:{display:true,text:'Customers Not Yet Renewed'} } }
         }
       });
       document.getElementById('dispRenewalTbl').innerHTML = (d.metabase_renewal||[]).map(r => `<tr>
         <td>${r.expiry_date}</td>
         <td>${r.total}</td>
-        <td>${r.renewed}</td>
-        <td><b style="color:#7c3aed">${r.renewal_rate}%</b></td>
       </tr>`).join('');
     } else {
-      document.getElementById('dispRenewalTbl').innerHTML = '<tr><td colspan="4" style="color:#94a3b8;text-align:center">Metabase data unavailable — check METABASE_DB_ID env var</td></tr>';
+      document.getElementById('dispRenewalTbl').innerHTML = '<tr><td colspan="2" style="color:#94a3b8;text-align:center">Metabase data unavailable — check METABASE_DB_ID env var</td></tr>';
     }
 
   } catch(e) {
@@ -2208,8 +2206,15 @@ def r11_campaign():
     r11_date  = (today - timedelta(days=11)).strftime("%Y-%m-%d")
     today_str = today.strftime("%d %b")
 
-    # Filter call_log to calls made today
-    today_calls = [c for c in call_log if (c.get("time","") or "").startswith(today_str)]
+    RENEWED = {"Already Recharged", "Will Recharge Today"}
+
+    # Filter call_log: calls made today whose plan expired on r11_date, not yet renewed
+    r11_date_display = (today - timedelta(days=11)).strftime("%d %b")  # e.g. "13 Jul"
+    today_calls = [
+        c for c in call_log
+        if (c.get("time","") or "").startswith(today_str)
+        and (c.get("disposition","Pending") or "Pending") not in RENEWED
+    ]
 
     disp_counts = {}
     for c in today_calls:
@@ -2223,12 +2228,25 @@ def r11_campaign():
     r11_count = None
     try:
         sql = f"""
-        SELECT COUNT(DISTINCT t.ROUTER_NAS_ID) as cnt
-        FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-        WHERE t.OTP = 'DONE'
-          AND t.DEVICE_LIMIT = 10
-          AND t.MOBILE > '5999999999'
-          AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
+        WITH expired AS (
+            SELECT t.ROUTER_NAS_ID, t.MOBILE,
+                   DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+            WHERE t.OTP = 'DONE'
+              AND t.DEVICE_LIMIT = 10
+              AND t.MOBILE > '5999999999'
+              AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.ROUTER_NAS_ID
+                                       ORDER BY t.CREATED_ON DESC) = 1
+        )
+        SELECT COUNT(*) AS cnt
+        FROM expired e
+        WHERE NOT EXISTS (
+            SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
+            WHERE t2.MOBILE = e.MOBILE
+              AND t2.OTP = 'DONE'
+              AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > e.expiry_date
+        )
         """
         rows = _metabase_query(sql)
         if rows:
@@ -2273,24 +2291,17 @@ WITH r11_cohort AS (
         PARTITION BY t.ROUTER_NAS_ID
         ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
     ) = 1
-),
-renewals AS (
-    SELECT DISTINCT r.expiry_date, r.MOBILE
-    FROM r11_cohort r
-    JOIN PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
-      ON r.MOBILE = t2.MOBILE
-    WHERE t2.OTP = 'DONE'
-      AND t2.DEVICE_LIMIT = 10
-      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > r.expiry_date
-      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) <= DATEADD('day', 15, r.expiry_date)
 )
 SELECT
     r.expiry_date::VARCHAR AS expiry_date,
-    COUNT(*) AS total,
-    COUNT(rn.MOBILE) AS renewed,
-    ROUND(COUNT(rn.MOBILE) * 100.0 / NULLIF(COUNT(*),0), 1) AS renewal_rate
+    COUNT(*) AS total
 FROM r11_cohort r
-LEFT JOIN renewals rn ON r.MOBILE = rn.MOBILE AND r.expiry_date = rn.expiry_date
+WHERE NOT EXISTS (
+    SELECT 1 FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t2
+    WHERE t2.MOBILE = r.MOBILE
+      AND t2.OTP = 'DONE'
+      AND DATE(DATEADD('minute', 330, t2.CREATED_ON)) > r.expiry_date
+)
 GROUP BY r.expiry_date
 ORDER BY r.expiry_date DESC
 """
@@ -2312,8 +2323,11 @@ def retention_dispositions():
 
     # ── Disposition breakdown from call_log ──────────────────────────────────
     cutoff = datetime.now() - timedelta(days=days)
+    RENEWED = {"Already Recharged", "Will Recharge Today"}
     recent_calls = []
     for c in call_log:
+        if (c.get("disposition","Pending") or "Pending") in RENEWED:
+            continue  # exclude already renewed
         try:
             t = datetime.strptime(c.get("time",""), "%d %b %H:%M")
             t = t.replace(year=datetime.now().year)
@@ -2344,10 +2358,8 @@ def retention_dispositions():
         rows = _metabase_query(sql)
         for r in rows:
             metabase_rows.append({
-                "expiry_date":   str(r.get("EXPIRY_DATE") or r.get("expiry_date","")),
-                "total":         int(r.get("TOTAL") or r.get("total") or 0),
-                "renewed":       int(r.get("RENEWED") or r.get("renewed") or 0),
-                "renewal_rate":  float(r.get("RENEWAL_RATE") or r.get("renewal_rate") or 0),
+                "expiry_date":  str(r.get("EXPIRY_DATE") or r.get("expiry_date","")),
+                "total":        int(r.get("TOTAL") or r.get("total") or 0),
             })
     except Exception as e:
         log.warning(f"Dispositions Metabase query failed: {e}")
