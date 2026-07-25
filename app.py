@@ -757,14 +757,30 @@ function renderDateTable(data, period) {
   const body = document.getElementById('dateTblBody');
   const html = data.dates.map((date, i) => {
     if (isFullAI) {
-      const p = data.series[data.cohorts[0]][i];
-      const d4 = p.day4_rate !== null ? `${p.day4_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day4}/${p.r15_eligible})</span>` : `<span style="color:#94a3b8">—</span>`;
+      // merge all cohorts: sum totals, pick first non-empty call_date
+      let merged = { rate:0, renewed:0, total:0, day0:0, day0_rate:0, day4:0, day4_rate:null, r15_eligible:0, call_date:'' };
+      for (const c of data.cohorts) {
+        const p = data.series[c][i];
+        if (!p) continue;
+        merged.renewed     += p.renewed || 0;
+        merged.total       += p.total || 0;
+        merged.day0        += p.day0 || 0;
+        merged.day4        += p.day4 || 0;
+        merged.r15_eligible+= p.r15_eligible || 0;
+        if (!merged.call_date && p.call_date) merged.call_date = p.call_date;
+        if (p.day4_rate !== null) merged.day4_rate = 1; // flag that day4 exists
+      }
+      merged.rate     = merged.total ? Math.round(merged.renewed*100/merged.total*10)/10 : 0;
+      merged.day0_rate= merged.total ? Math.round(merged.day0*100/merged.total*10)/10 : 0;
+      const d4 = merged.day4_rate !== null && merged.r15_eligible
+        ? `${Math.round(merged.day4*100/merged.r15_eligible*10)/10}% <span style="color:#94a3b8;font-size:11px">(${merged.day4}/${merged.r15_eligible})</span>`
+        : `<span style="color:#94a3b8">—</span>`;
       return `<tr>
         <td>${date}</td>
-        <td style="color:#64748b">${p.call_date || '—'}</td>
-        <td>${p.rate}% <span style="color:#94a3b8;font-size:11px">(${p.renewed}/${p.total})</span></td>
+        <td style="color:#64748b">${merged.call_date || '—'}</td>
+        <td>${merged.rate}% <span style="color:#94a3b8;font-size:11px">(${merged.renewed}/${merged.total})</span></td>
         <td style="color:#10b981">${d4}</td>
-        <td style="color:#f59e0b">${p.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${p.day0}/${p.total})</span></td>
+        <td style="color:#f59e0b">${merged.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${merged.day0}/${merged.total})</span></td>
       </tr>`;
     } else {
       const cells = data.cohorts.map(c => {
