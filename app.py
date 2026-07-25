@@ -727,10 +727,15 @@ function renderDateChart(data, period) {
         legend: { position: 'top' },
         tooltip: { callbacks: { afterLabel: (item) => {
           const label = item.dataset.label;
-          const cohort = data.cohorts[0];
-          const p = data.series[cohort][item.dataIndex];
-          if (label === 'Till R15 (Day 4)') return `${p.day4}/${p.r15_eligible} (crossed Day 4)`;
-          if (label === 'Till R11 (Day 0)') return `${p.day0}/${p.total} (same day)`;
+          const idx = item.dataIndex;
+          // find the cohort that owns this dataset
+          let p = null;
+          for (const c of data.cohorts) {
+            if (data.series[c] && data.series[c][idx]) { p = data.series[c][idx]; break; }
+          }
+          if (!p) return '';
+          if (label === 'Till R15 (Day 4)') return p.day4_rate !== null ? `${p.day4}/${p.r15_eligible} (crossed Day 4)` : '— (no data)';
+          if (label === 'Till R11 (Day 0)') return p.day0 != null ? `${p.day0}/${p.total} (same day)` : '— (no data)';
           return `${p.renewed}/${p.total} renewed`;
         }}}
       },
