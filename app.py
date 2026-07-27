@@ -2259,12 +2259,12 @@ def r11_campaign():
               AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
               AND t.MOBILE <> ''
               AND t.DEVICE_LIMIT = 10
+              AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY t.ROUTER_NAS_ID, t.DEVICE_ID
                 ORDER BY DATEADD('minute', 330, t.CREATED_ON) DESC
             ) = 1
         ) latest
-        WHERE expiry_date = '{r11_date}'
         """
         rows = _metabase_query(sql)
         if rows:
@@ -2307,12 +2307,13 @@ FROM (
       AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
       AND t.MOBILE <> ''
       AND t.DEVICE_LIMIT = 10
+      AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
+            BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
     QUALIFY ROW_NUMBER() OVER (
         PARTITION BY t.ROUTER_NAS_ID, t.DEVICE_ID
         ORDER BY DATEADD('minute', 330, t.CREATED_ON) DESC
     ) = 1
 ) latest
-WHERE expiry_date BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
 GROUP BY expiry_date
 ORDER BY expiry_date DESC
 """
