@@ -2215,6 +2215,7 @@ def _metabase_query(sql):
     r = req.post(url, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
     result = r.json()
+    log.warning(f"METABASE RAW KEYS: {list(result.keys())} | data keys: {list(result.get('data',{}).keys())} | cols: {result.get('data',{}).get('cols',[])} | rows: {result.get('data',{}).get('rows',[])}")
     cols = [c["name"] for c in result.get("data",{}).get("cols",[])]
     rows = result.get("data",{}).get("rows",[])
     return [dict(zip(cols, row)) for row in rows]
