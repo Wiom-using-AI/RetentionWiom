@@ -2251,12 +2251,25 @@ def r11_campaign():
     r11_error = None
     try:
         sql = f"""
-        SELECT COUNT(DISTINCT CONCAT(ROUTER_NAS_ID, '|', COALESCE(DEVICE_ID, ''))) AS cnt
-        FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
-        WHERE OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-          AND MOBILE <> ''
-          AND DEVICE_LIMIT = 10
-          AND DATE(DATEADD('minute', 330, OTP_EXPIRY_TIME)) = '{r11_date}'
+        WITH test_lcos AS (
+            SELECT DISTINCT LCO_ACCOUNT_ID
+            FROM PROD_DB.PUBLIC.TEST_LCO_ACCOUNT_ID
+        ),
+        current_active AS (
+            SELECT t.ROUTER_NAS_ID, t.MOBILE,
+                   DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+            WHERE t.OTP = 'DONE'
+              AND t.DEVICE_LIMIT = 10
+              AND t.MOBILE > '5999999999'
+              AND t.CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
+              AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY t.ROUTER_NAS_ID
+                ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
+            ) = 1
+        )
+        SELECT COUNT(*) AS cnt FROM current_active
         """
         rows = _metabase_query(sql)
         log.warning(f"R11 Metabase rows: {rows}")
@@ -2290,16 +2303,28 @@ def r11_campaign():
 
 
 DISPOSITION_RENEWAL_SQL = """
-SELECT
-    DATE(DATEADD('minute', 330, OTP_EXPIRY_TIME))::VARCHAR AS expiry_date,
-    COUNT(DISTINCT CONCAT(ROUTER_NAS_ID, '|', COALESCE(DEVICE_ID, ''))) AS total
-FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
-WHERE OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
-  AND MOBILE <> ''
-  AND DEVICE_LIMIT = 10
-  AND DATE(DATEADD('minute', 330, OTP_EXPIRY_TIME))
-        BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
-GROUP BY DATE(DATEADD('minute', 330, OTP_EXPIRY_TIME))
+WITH test_lcos AS (
+    SELECT DISTINCT LCO_ACCOUNT_ID
+    FROM PROD_DB.PUBLIC.TEST_LCO_ACCOUNT_ID
+),
+current_active AS (
+    SELECT t.ROUTER_NAS_ID,
+           DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
+    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
+    WHERE t.OTP = 'DONE'
+      AND t.DEVICE_LIMIT = 10
+      AND t.MOBILE > '5999999999'
+      AND t.CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
+      AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
+            BETWEEN DATEADD('day', -{days}, CURRENT_DATE()) AND DATEADD('day', -11, CURRENT_DATE())
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY t.ROUTER_NAS_ID
+        ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
+    ) = 1
+)
+SELECT expiry_date::VARCHAR AS expiry_date, COUNT(*) AS total
+FROM current_active
+GROUP BY expiry_date
 ORDER BY expiry_date DESC
 """
 
