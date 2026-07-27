@@ -2255,8 +2255,7 @@ def r11_campaign():
             SELECT t.ROUTER_NAS_ID, t.DEVICE_ID,
                    DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
             FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-            WHERE t.AUTH_STATE = 1
-              AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+            WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
               AND t.MOBILE <> ''
               AND t.DEVICE_LIMIT = 10
               AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
@@ -2305,8 +2304,7 @@ FROM (
     SELECT t.ROUTER_NAS_ID, t.DEVICE_ID,
            DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
     FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-    WHERE t.AUTH_STATE = 1
-      AND t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
+    WHERE t.OTP NOT IN ('FREE', 'PAY_ONLINE', 'CASH', 'ROAM')
       AND t.MOBILE <> ''
       AND t.DEVICE_LIMIT = 10
       AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))
