@@ -2268,8 +2268,18 @@ def r11_campaign():
                 PARTITION BY t.ROUTER_NAS_ID
                 ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
             ) = 1
+        ),
+        renewed AS (
+            SELECT DISTINCT ROUTER_NAS_ID
+            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
+            WHERE OTP = 'DONE'
+              AND DEVICE_LIMIT = 10
+              AND MOBILE > '5999999999'
+              AND DATE(DATEADD('minute', 330, CREATED_ON)) > '{r11_date}'
         )
-        SELECT COUNT(*) AS cnt FROM current_active
+        SELECT COUNT(*) AS cnt
+        FROM current_active ca
+        WHERE ca.ROUTER_NAS_ID NOT IN (SELECT ROUTER_NAS_ID FROM renewed)
         """
         rows = _metabase_query(sql)
         log.warning(f"R11 Metabase rows: {rows}")
@@ -2321,9 +2331,18 @@ current_active AS (
         PARTITION BY t.ROUTER_NAS_ID
         ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
     ) = 1
+),
+renewed AS (
+    SELECT DISTINCT ROUTER_NAS_ID
+    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
+    WHERE OTP = 'DONE'
+      AND DEVICE_LIMIT = 10
+      AND MOBILE > '5999999999'
+      AND DATE(DATEADD('minute', 330, CREATED_ON)) > DATEADD('day', -{days}, CURRENT_DATE())
 )
 SELECT expiry_date::VARCHAR AS expiry_date, COUNT(*) AS total
-FROM current_active
+FROM current_active ca
+WHERE ca.ROUTER_NAS_ID NOT IN (SELECT ROUTER_NAS_ID FROM renewed)
 GROUP BY expiry_date
 ORDER BY expiry_date DESC
 """
