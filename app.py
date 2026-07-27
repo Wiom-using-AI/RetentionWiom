@@ -2267,8 +2267,9 @@ def r11_campaign():
         ) latest
         """
         rows = _metabase_query(sql)
+        log.warning(f"R11 Metabase rows: {rows}")
         if rows:
-            r11_count = rows[0].get("CNT") or rows[0].get("cnt")
+            r11_count = list(rows[0].values())[0] if rows[0] else None
     except Exception as e:
         log.warning(f"R11 Metabase count failed: {e}")
         r11_error = str(e)
@@ -2286,6 +2287,7 @@ def r11_campaign():
         "today":             today.strftime("%Y-%m-%d"),
         "r11_count":         r11_count,
         "r11_error":         r11_error,
+        "r11_raw":           rows if 'rows' in dir() else None,
         "calls_made":        len(today_calls),
         "answered":          answered,
         "pending":           pending,
