@@ -1238,6 +1238,7 @@ def single_call():
         "agent_name":     d.get("agent", "Jyoti"),
     }
     webhook_url = os.getenv("WEBHOOK_URL", "https://retentionwiom-production.up.railway.app/webhook")
+    from_number = os.getenv("FROM_PHONE_NUMBER", "")
     payload = {
         "agent_id": AGENT_ID,
         "recipient_phone_number": d["phone"],
@@ -1245,6 +1246,8 @@ def single_call():
         "variables": variables,
         "webhook_url": webhook_url,
     }
+    if from_number:
+        payload["from_number"] = from_number
 
     try:
         resp = req.post(f"{BASE_URL}/call", headers=get_headers(), json=payload, timeout=30)

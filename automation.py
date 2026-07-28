@@ -223,6 +223,7 @@ def trigger_bolna_calls(customers, batch_label="auto"):
             "days_remaining": hindi_days(days_left),
             "agent_name":     "Jyoti",
         }
+        from_number = os.getenv("FROM_PHONE_NUMBER", "")
         payload = {
             "agent_id": BOLNA_AGENT_ID,
             "recipient_phone_number": phone,
@@ -230,6 +231,8 @@ def trigger_bolna_calls(customers, batch_label="auto"):
             "variables": variables,
             "webhook_url": WEBHOOK_URL,
         }
+        if from_number:
+            payload["from_number"] = from_number
         try:
             r = req.post(f"{BOLNA_BASE}/call", headers=BOLNA_HEADERS, json=payload, timeout=30)
             r.raise_for_status()
