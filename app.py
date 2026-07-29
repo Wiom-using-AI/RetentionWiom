@@ -414,9 +414,9 @@ tbody tr:hover td { background: #f8faff; }
 
     <!-- Period Tabs -->
     <div class="tabs">
-      <div class="tab-item active" onclick="switchPeriod('till21')" id="tab-till21">📆 Till 21st June (No AI Call)</div>
+      <div class="tab-item active" onclick="switchPeriod('fullaijuly')" id="tab-fullaijuly">🚀 100% AI from 4th July</div>
       <div class="tab-item" onclick="switchPeriod('after21')" id="tab-after21">🤖 After 21st June (AI Call)</div>
-      <div class="tab-item" onclick="switchPeriod('fullaijuly')" id="tab-fullaijuly">🚀 100% AI from 4th July</div>
+      <div class="tab-item" onclick="switchPeriod('till21')" id="tab-till21">📆 Till 21st June (No AI Call)</div>
     </div>
 
     <!-- Summary -->
@@ -630,7 +630,7 @@ setInterval(tick, 1000); tick();
 // ─── Report Dashboard (backed entirely by the Google Sheet) ──────────────────
 const COHORT_COLORS = { 'Call': '#2563eb', 'AI Call': '#7c3aed', 'No Call': '#f97316' };
 let dateChartObj = null;
-let currentPeriod = 'till21';
+let currentPeriod = 'fullaijuly';
 
 function switchPeriod(period) {
   currentPeriod = period;
