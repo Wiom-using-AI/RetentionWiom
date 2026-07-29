@@ -127,6 +127,12 @@ def _init_db():
                     id SERIAL PRIMARY KEY,
                     data JSONB NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS date_comments (
+                    expiry_date TEXT PRIMARY KEY,
+                    comment TEXT NOT NULL DEFAULT '',
+                    updated_by TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
             """)
         conn.commit()
     except Exception:
@@ -311,6 +317,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4ff; color: #1e293b;
 .type-bracket-legend { font-size: 10px; color: #94a3b8; margin-top: 3px; }
 .pp-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: #dcfce7; color: #166534; }
 .pp-badge.neg { background: #fee2e2; color: #991b1b; }
+.comment-cell { max-width: 220px; position: relative; }
+.comment-text { font-size: 12px; color: #475569; word-break: break-word; }
+.comment-edit-icon { margin-left: 6px; cursor: pointer; font-size: 11px; opacity: 0.4; }
+.comment-edit-icon:hover { opacity: 1; }
+.comment-input { width: 100%; font-size: 12px; border: 1.5px solid #6366f1; border-radius: 5px; padding: 2px 6px; outline: none; }
 .rate-bar-row { margin-bottom: 10px; }
 .rate-bar-lbl { display: flex; justify-content: space-between; font-size: 11px; color: #475569; margin-bottom: 3px; }
 .rate-bar-track { height: 8px; border-radius: 4px; background: #f1f5f9; }
@@ -632,7 +643,7 @@ async function loadReport(forceRefresh=false) {
   try {
     const params = new URLSearchParams({ period: currentPeriod });
     if (forceRefresh) params.set('refresh', '1');
-    const res = await fetch('/api/cohort-data?' + params.toString());
+    const [res] = await Promise.all([fetch('/api/cohort-data?' + params.toString()), loadDateComments()]);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
@@ -747,10 +758,49 @@ function renderDateChart(data, period) {
   });
 }
 
+let _dateComments = {};
+async function loadDateComments() {
+  try {
+    const r = await fetch('/api/date-comments');
+    _dateComments = await r.json();
+  } catch(e) { _dateComments = {}; }
+}
+function commentCell(date) {
+  const info = _dateComments[date] || {};
+  const txt = info.comment || '';
+  const by  = info.updated_by ? `by ${info.updated_by}` : '';
+  const tip = txt && by ? `title="${by}"` : '';
+  return `<td class="comment-cell" data-date="${date}" ${tip}>
+    <span class="comment-text">${txt || '<span style="color:#94a3b8;font-style:italic">Add note...</span>'}</span>
+    <span class="comment-edit-icon" onclick="openCommentEdit(this)" title="Edit comment">✏️</span>
+  </td>`;
+}
+function openCommentEdit(icon) {
+  const cell = icon.closest('td');
+  const date = cell.dataset.date;
+  const existing = (_dateComments[date] || {}).comment || '';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.value = existing;
+  inp.className = 'comment-input';
+  inp.placeholder = 'Type comment, press Enter to save';
+  cell.innerHTML = '';
+  cell.appendChild(inp);
+  inp.focus();
+  const save = async () => {
+    const val = inp.value.trim();
+    await fetch('/api/date-comment', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({expiry_date: date, comment: val, updated_by: 'user'})});
+    await loadDateComments();
+    renderDateTable(_rdData, currentPeriod);
+  };
+  inp.addEventListener('keydown', e => { if(e.key==='Enter') save(); if(e.key==='Escape') renderDateTable(_rdData, currentPeriod); });
+  inp.addEventListener('blur', save);
+}
 function renderDateTable(data, period) {
   const isFullAI = period === 'fullaijuly';
   const headers = isFullAI
-    ? ['<th>Expiry Date</th><th>Call Date</th><th>Overall</th><th>Till R15 (Day 4)</th><th>Till R11 (Day 0)</th>']
+    ? ['<th>Expiry Date</th><th>Call Date</th><th>Overall</th><th>Till R15 (Day 4)</th><th>Till R11 (Day 0)</th><th>Comments</th>']
     : ['<th>Date</th>' + data.cohorts.map(c => `<th>${c}</th>`).join('')];
   document.getElementById('dateTblHead').innerHTML = '<tr>' + headers.join('') + '</tr>';
 
@@ -781,6 +831,7 @@ function renderDateTable(data, period) {
         <td>${merged.rate}% <span style="color:#94a3b8;font-size:11px">(${merged.renewed}/${merged.total})</span></td>
         <td style="color:#10b981">${d4}</td>
         <td style="color:#f59e0b">${merged.day0_rate}% <span style="color:#94a3b8;font-size:11px">(${merged.day0}/${merged.total})</span></td>
+        ${commentCell(date)}
       </tr>`;
     } else {
       const cells = data.cohorts.map(c => {
@@ -790,7 +841,7 @@ function renderDateTable(data, period) {
       return `<tr><td>${date}</td>${cells}</tr>`;
     }
   }).join('');
-  const colspan = isFullAI ? 5 : 1 + data.cohorts.length;
+  const colspan = isFullAI ? 6 : 1 + data.cohorts.length;
   body.innerHTML = html || `<tr><td colspan="${colspan}"><div class="empty-state"><div class="big">📅</div>No data</div></td></tr>`;
 }
 
@@ -905,7 +956,10 @@ async function loadRenewalDay(forceRefresh=false) {
   const params = new URLSearchParams({ period: currentPeriod });
   if (forceRefresh) params.set('refresh', '1');
   try {
-    const res = await fetch('/api/renewal-day-data?' + params.toString());
+    const [res] = await Promise.all([
+      fetch('/api/renewal-day-data?' + params.toString()),
+      loadDateComments()
+    ]);
     _rdData = await res.json();
     if (_rdData.error) throw new Error(_rdData.error);
     document.getElementById('renewalDayNoDate').style.display = _rdData.has_renewal_date ? 'none' : '';
@@ -2421,6 +2475,50 @@ def retention_dispositions():
     }
     _disp_cache[ckey] = {"data": data, "ts": now}
     return jsonify(data)
+
+
+@app.route("/api/date-comments")
+def api_get_date_comments():
+    conn = _get_db()
+    if not conn:
+        return jsonify({})
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT expiry_date, comment, updated_by, updated_at::TEXT FROM date_comments")
+            rows = cur.fetchall()
+            return jsonify({r["expiry_date"]: {"comment": r["comment"], "updated_by": r["updated_by"], "updated_at": r["updated_at"]} for r in rows})
+    except Exception as e:
+        log.error(f"date_comments get error: {e}")
+        return jsonify({})
+    finally:
+        conn.close()
+
+@app.route("/api/date-comment", methods=["POST"])
+def api_set_date_comment():
+    body = request.get_json(force=True) or {}
+    expiry_date = (body.get("expiry_date") or "").strip()
+    comment     = (body.get("comment") or "").strip()
+    updated_by  = (body.get("updated_by") or "").strip() or "anonymous"
+    if not expiry_date:
+        return jsonify({"error": "expiry_date required"}), 400
+    conn = _get_db()
+    if not conn:
+        return jsonify({"error": "no database"}), 503
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO date_comments (expiry_date, comment, updated_by, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (expiry_date) DO UPDATE
+                SET comment = EXCLUDED.comment, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+            """, (expiry_date, comment, updated_by))
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"date_comments set error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
