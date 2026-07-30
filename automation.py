@@ -34,96 +34,43 @@ GSHEET_SCRIPT_URL = os.getenv(
 
 BOLNA_HEADERS = {"Authorization": f"Bearer {BOLNA_API_KEY}", "Content-Type": "application/json"}
 
-# ── R11 SQL — dynamically uses today - 11 days ────────────────────────────────
+# ── R11 SQL — uses HAVING to filter plan_expiry_time = today - 11 days ────────
 R11_SQL = """
-WITH test_lcos AS (
-    SELECT DISTINCT LCO_ACCOUNT_ID
-    FROM PROD_DB.PUBLIC.TEST_LCO_ACCOUNT_ID
-),
-current_active AS (
+WITH partner_details AS (
     SELECT
-        t.ROUTER_NAS_ID,
-        t.MOBILE,
-        t.SELECTED_PLAN_ID,
-        t.TRANSACTION_ID,
-        t.CREATED_BY,
-        t.charges,
-        DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))  AS expiry_date,
-        DATEADD('minute', 330, t.OTP_EXPIRY_TIME)        AS plan_expiry_time,
-        DATE(DATEADD('minute', 330, t.CREATED_ON))       AS created_date
-    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-    WHERE t.OTP = 'DONE'
-      AND t.DEVICE_LIMIT = 10
-      AND t.MOBILE > '5999999999'
-      AND t.CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
-      AND DATE(DATEADD('minute', 330, t.CREATED_ON)) <= CURRENT_DATE()
-      AND DATEADD('day', 15, DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME))) >= CURRENT_DATE()
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY t.ROUTER_NAS_ID
-        ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
-    ) = 1
-),
-wg_customers AS (
-    SELECT NASID, DEVICE_ID, NAME
-    FROM PROD_DB.PUBLIC.T_WG_CUSTOMER
-    WHERE _FIVETRAN_DELETED = FALSE
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY NASID ORDER BY ADDED_TIME DESC NULLS LAST) = 1
-),
-hierarchy AS (
-    SELECT PARTNER_ACCOUNT_ID PARTNER_ID, PARTNER_NAME AS lco_name, ZONE
-    FROM PROD_DB.PUBLIC.HIERARCHY_BASE
-    WHERE DEDUP_FLAG = 1
+        partner_account_id,
+        partner_name
+    FROM prod_db.public.hierarchy_base
+    WHERE dedup_flag = 1
 ),
 recharge_counts AS (
-    SELECT ROUTER_NAS_ID, COUNT(*) AS nmbr_recharge
+    SELECT
+        ROUTER_NAS_ID nasid,
+        COUNT(*) AS nmbr_recharge
     FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
-    WHERE OTP = 'DONE' AND DEVICE_LIMIT = 10 AND MOBILE > '5999999999'
-      AND CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
+    WHERE OTP = 'DONE'
+      AND DEVICE_LIMIT = 10
+      AND MOBILE > '5999999999'
     GROUP BY ROUTER_NAS_ID
-),
-old_nas AS (
-    SELECT DISTINCT ROUTER_NAS_ID
-    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
-    WHERE OTP = 'DONE' AND DEVICE_LIMIT = 10 AND MOBILE > '5999999999'
-      AND CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
-      AND DATE(DATEADD('minute', 330, OTP_ISSUED_TIME)) < '2026-01-26'
-),
-migration_dates AS (
-    SELECT t.ROUTER_NAS_ID, MIN(DATE(DATEADD('minute', 330, t.CREATED_ON))) AS first_migration_date
-    FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-    JOIN PROD_DB.PUBLIC.T_PLAN_CONFIGURATION pc ON t.SELECTED_PLAN_ID = pc.ID
-    WHERE t.OTP = 'DONE' AND t.DEVICE_LIMIT = 10 AND t.MOBILE > '5999999999'
-      AND t.CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
-      AND pc.COMBINED_SETTING_ID = 22
-    GROUP BY t.ROUTER_NAS_ID
 )
 SELECT
-    ca.ROUTER_NAS_ID  AS router_nasid,
-    wc.DEVICE_ID,
-    wc.NAME           AS customer_name,
-    h.lco_name,
-    h.ZONE,
-    ca.MOBILE,
-    ca.plan_expiry_time,
-    ca.expiry_date    AS plan_expired_on,
-    CASE
-        WHEN o.ROUTER_NAS_ID IS NULL               THEN 'Pay G'
-        WHEN md.first_migration_date IS NOT NULL
-         AND md.first_migration_date <= CURRENT_DATE() THEN 'Migrated'
-        ELSE 'Legacy'
-    END AS customer_type,
-    pc.SPEED_LIMIT_MBPS AS plan_speed,
-    rc.nmbr_recharge,
-    ca.charges
-FROM current_active ca
-JOIN PROD_DB.PUBLIC.T_PLAN_CONFIGURATION pc ON ca.SELECTED_PLAN_ID = pc.ID
-LEFT JOIN wg_customers wc  ON ca.ROUTER_NAS_ID = wc.NASID
-LEFT JOIN hierarchy h      ON ca.CREATED_BY = h.PARTNER_ID
-LEFT JOIN old_nas o        ON ca.ROUTER_NAS_ID = o.ROUTER_NAS_ID
-LEFT JOIN migration_dates md ON ca.ROUTER_NAS_ID = md.ROUTER_NAS_ID
-LEFT JOIN recharge_counts rc ON ca.ROUTER_NAS_ID = rc.ROUTER_NAS_ID
-WHERE plan_expired_on = '{target_date}'
-ORDER BY ca.expiry_date
+    mobile AS customer_mobile,
+    router_nas_id AS nasid,
+    try_parse_json(extra_data):customerAccountId AS customer_acc_id,
+    nmbr_recharge AS total_recharges_done,
+    created_by AS lco_account_id,
+    partner_name,
+    max(otp_expiry_time)::date AS plan_expiry_time
+FROM t_router_user_mapping trum
+LEFT JOIN partner_details partner
+    ON trum.created_by::int = partner.partner_account_id
+LEFT JOIN recharge_counts recharges
+    ON recharges.nasid::int = trum.router_nas_id::int
+WHERE
+    lower(otp) = 'done'
+    AND device_limit = 10
+GROUP BY ALL
+HAVING plan_expiry_time = dateadd(day, -11, current_date())::date
 """
 
 # ── In-memory batch tracker ───────────────────────────────────────────────────
@@ -132,9 +79,8 @@ daily_batches = {}
 
 
 # ── Metabase API ──────────────────────────────────────────────────────────────
-def fetch_r11_from_metabase(target_date: str):
+def fetch_r11_from_metabase(target_date: str = ""):
     """Run R11 SQL via Metabase API and return list of customer dicts."""
-    sql = R11_SQL.format(target_date=target_date)
     url = f"{METABASE_URL}/api/dataset"
     headers = {
         "Content-Type": "application/json",
@@ -143,9 +89,9 @@ def fetch_r11_from_metabase(target_date: str):
     payload = {
         "database": METABASE_DB_ID,
         "type": "native",
-        "native": {"query": sql},
+        "native": {"query": R11_SQL},
     }
-    log.info(f"Fetching R11 list from Metabase for date: {target_date}")
+    log.info("Fetching R11 list from Metabase (today - 11 days)")
     r = req.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     data = r.json()
@@ -153,7 +99,7 @@ def fetch_r11_from_metabase(target_date: str):
     cols = [c["name"].lower() for c in data["data"]["cols"]]
     rows = data["data"]["rows"]
     customers = [dict(zip(cols, row)) for row in rows]
-    log.info(f"Fetched {len(customers)} customers for {target_date}")
+    log.info(f"Fetched {len(customers)} R11 customers")
     return customers
 
 
@@ -200,7 +146,7 @@ def trigger_bolna_calls(customers, batch_label="auto"):
     records = []
     today = date.today()
     for c in customers:
-        expiry_raw  = str(c.get("plan_expired_on") or c.get("expiry_date") or "")
+        expiry_raw  = str(c.get("plan_expiry_time") or c.get("plan_expired_on") or c.get("expiry_date") or "")
         expiry_fmt  = hindi_date(expiry_raw)
 
         # days remaining = 15 - (today - expiry_date)
@@ -211,7 +157,7 @@ def trigger_bolna_calls(customers, batch_label="auto"):
         except:
             days_left = 4
 
-        phone = str(c.get("mobile") or "").strip()
+        phone = str(c.get("customer_mobile") or c.get("mobile") or "").strip()
         if not phone.startswith("+"):
             phone = "+91" + phone
 
@@ -243,9 +189,9 @@ def trigger_bolna_calls(customers, batch_label="auto"):
                 "name": name,
                 "expiry": expiry_fmt,
                 "days": str(days_left),
-                "nasid": c.get("router_nasid",""),
+                "nasid": c.get("nasid") or c.get("router_nasid",""),
                 "zone": c.get("zone",""),
-                "lco": c.get("lco_name",""),
+                "lco": c.get("partner_name") or c.get("lco_name",""),
                 "customer_type": c.get("customer_type",""),
                 "status": "queued",
                 "disposition": "Pending",
