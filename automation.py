@@ -181,6 +181,8 @@ def trigger_bolna_calls(customers, batch_label="auto"):
             payload["from_number"] = from_number
         try:
             r = req.post(f"{BOLNA_BASE}/call", headers=BOLNA_HEADERS, json=payload, timeout=30)
+            if not r.ok:
+                log.error(f"Bolna error {r.status_code} for {phone}: {r.text}")
             r.raise_for_status()
             exec_id = r.json().get("execution_id") or r.json().get("id") or ""
             records.append({
