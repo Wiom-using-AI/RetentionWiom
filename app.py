@@ -1239,12 +1239,20 @@ def set_apikey():
 
 @app.route("/api/auto-campaign/trigger", methods=["POST"])
 def manual_trigger():
-    """Manually trigger today's campaign (for testing or emergencies)."""
+    """Manually trigger today's campaign — runs synchronously so errors are visible."""
     d = request.json or {}
     target_date = d.get("target_date") or (date.today() - timedelta(days=11)).strftime("%Y-%m-%d")
     is_redial   = d.get("redial", False)
-    threading.Thread(target=run_daily_campaign, kwargs={"target_date": target_date, "is_redial": is_redial}, daemon=True).start()
-    return jsonify({"success": True, "message": f"Campaign triggered for {target_date}", "redial": is_redial})
+    try:
+        result = run_daily_campaign(target_date=target_date, is_redial=is_redial)
+        called = result.get("called", 0)
+        if result.get("success"):
+            return jsonify({"success": True, "message": f"Campaign triggered for {target_date} — {called} calls fired", "called": called})
+        else:
+            return jsonify({"success": False, "message": result.get("error", "Unknown error")}), 500
+    except Exception as e:
+        log.error(f"Manual trigger exception: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/api/auto-campaign/today")
 def today_calls():
