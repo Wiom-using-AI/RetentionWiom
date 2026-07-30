@@ -2303,40 +2303,35 @@ def r11_campaign():
     answered = sum(1 for c in today_calls if c.get("status") not in ("queued","no-answer","busy","failed","error",""))
     pending  = len(today_calls) - answered
 
-    # Metabase: count of R11 customers for today's R11 date
+    # Metabase: count of R11 customers — same query as automation uses
     r11_count = None
     r11_error = None
     try:
-        sql = f"""
-        WITH test_lcos AS (
-            SELECT DISTINCT LCO_ACCOUNT_ID
-            FROM PROD_DB.PUBLIC.TEST_LCO_ACCOUNT_ID
+        sql = """
+        WITH partner_details AS (
+            SELECT partner_account_id, partner_name
+            FROM prod_db.public.hierarchy_base
+            WHERE dedup_flag = 1
         ),
-        current_active AS (
-            SELECT t.ROUTER_NAS_ID, t.MOBILE,
-                   DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) AS expiry_date
-            FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING t
-            WHERE t.OTP = 'DONE'
-              AND t.DEVICE_LIMIT = 10
-              AND t.MOBILE > '5999999999'
-              AND t.CREATED_BY NOT IN (SELECT LCO_ACCOUNT_ID FROM test_lcos)
-              AND DATE(DATEADD('minute', 330, t.OTP_EXPIRY_TIME)) = '{r11_date}'
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY t.ROUTER_NAS_ID
-                ORDER BY DATE(DATEADD('minute', 330, t.CREATED_ON)) DESC
-            ) = 1
-        ),
-        renewed AS (
-            SELECT DISTINCT ROUTER_NAS_ID
+        recharge_counts AS (
+            SELECT ROUTER_NAS_ID nasid, COUNT(*) AS nmbr_recharge
             FROM PROD_DB.PUBLIC.T_ROUTER_USER_MAPPING
-            WHERE OTP = 'DONE'
-              AND DEVICE_LIMIT = 10
-              AND MOBILE > '5999999999'
-              AND DATE(DATEADD('minute', 330, CREATED_ON)) > '{r11_date}'
+            WHERE OTP = 'DONE' AND DEVICE_LIMIT = 10 AND MOBILE > '5999999999'
+            GROUP BY ROUTER_NAS_ID
+        ),
+        base AS (
+            SELECT
+                mobile AS customer_mobile,
+                router_nas_id AS nasid,
+                max(otp_expiry_time)::date AS plan_expiry_time
+            FROM t_router_user_mapping trum
+            LEFT JOIN recharge_counts recharges
+                ON recharges.nasid::int = trum.router_nas_id::int
+            WHERE lower(otp) = 'done' AND device_limit = 10
+            GROUP BY ALL
+            HAVING plan_expiry_time = dateadd(day, -11, current_date())::date
         )
-        SELECT COUNT(*) AS cnt
-        FROM current_active ca
-        WHERE ca.ROUTER_NAS_ID NOT IN (SELECT ROUTER_NAS_ID FROM renewed)
+        SELECT COUNT(*) AS cnt FROM base
         """
         rows = _metabase_query(sql)
         log.warning(f"R11 Metabase rows: {rows}")
